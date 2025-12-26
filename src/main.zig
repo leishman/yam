@@ -87,7 +87,7 @@ fn listenForMempool(stream: std.net.Stream, allocator: std.mem.Allocator) !void 
         } else if (std.mem.eql(u8, cmd, "addr")) {
             std.debug.print("<<< Received addr (peer addresses)\n", .{});
         } else if (std.mem.eql(u8, cmd, "tx")) {
-            std.debug.print("<<< Received tx (transaction data, len: {d})\n", .{message.payload.len});
+            try handleTxMessage(message.payload, allocator);
         } else if (std.mem.eql(u8, cmd, "reject")) {
             std.debug.print("<<< Received reject message\n", .{});
         } else {
@@ -127,9 +127,48 @@ fn handleInvMessage(inv_msg: *const yam.InvMessage) !void {
     }
 }
 
-// fn getDataForVectors(stream: std.net.Stream, inv_msg: *const yam.InvMessage, allocator: std.mem.Allocator) !void {
-//     sendMessage(stream, "getdata", inv_msg.vectors);
-// }
+fn handleTxMessage(payload: []const u8, allocator: std.mem.Allocator) !void {
+    var fbs = std.io.fixedBufferStream(payload);
+    const tx = try yam.Transaction.deserialize(fbs.reader(), allocator);
+    defer tx.deinit(allocator);
+
+    // Calculate and display txid
+    const txid_hex = try tx.txidHex(allocator);
+
+    std.debug.print("\n=== Transaction ===\n", .{});
+    std.debug.print("TXID: {s}\n", .{txid_hex});
+    std.debug.print("Version: {d}\n", .{tx.version});
+    std.debug.print("Inputs: {d}\n", .{tx.inputs.len});
+    std.debug.print("Outputs: {d}\n", .{tx.outputs.len});
+    std.debug.print("Locktime: {d}\n", .{tx.locktime});
+
+    // Display inputs
+    if (tx.inputs.len > 0) {
+        std.debug.print("\nInputs:\n", .{});
+        for (tx.inputs, 0..) |input, i| {
+            const hash_hex = input.prevoutHashHex();
+            std.debug.print("  [{d}] Prevout: {s}:{d}\n", .{ i, hash_hex, input.prevout_index });
+            std.debug.print("       Script length: {d} bytes\n", .{input.script.len});
+            std.debug.print("       Sequence: 0x{x}\n", .{input.sequence});
+        }
+    }
+
+    // Display outputs
+    if (tx.outputs.len > 0) {
+        std.debug.print("\nOutputs:\n", .{});
+        var total_output: u64 = 0;
+        for (tx.outputs, 0..) |output, i| {
+            const btc = output.valueBtc();
+            total_output += output.value;
+            std.debug.print("  [{d}] {d:.8} BTC ({d} satoshis)\n", .{ i, btc, output.value });
+            std.debug.print("       Script length: {d} bytes\n", .{output.script.len});
+        }
+        const total_btc = @as(f64, @floatFromInt(total_output)) / 100_000_000.0;
+        std.debug.print("\nTotal output: {d:.8} BTC ({d} satoshis)\n", .{ total_btc, total_output });
+    }
+
+    std.debug.print("\n", .{});
+}
 
 fn readMessage(stream: std.net.Stream, allocator: std.mem.Allocator) !struct { header: yam.MessageHeader, payload: []u8 } {
     // Read header

@@ -1,4 +1,6 @@
-//! By convention, root.zig is the root source file when making a library.
+// Root.zig - Bitcoin P2P protocol implementation
+// https://en.bitcoin.it/wiki/Protocol_documentation was used as the reference for this implementation.
+
 const std = @import("std");
 
 pub const MessageHeader = extern struct {
@@ -47,6 +49,7 @@ pub const ServiceFlags = struct {
     }
 };
 
+// Version payload
 pub const VersionPayload = struct {
     version: i32 = 70015,
     services: u64 = 0,
@@ -172,21 +175,7 @@ pub const InvVector = struct {
     /// Convert hash to hex string (for display)
     /// Note: Bitcoin hashes are sent in little-endian, so this reverses them for display
     pub fn hashHex(self: InvVector) [64]u8 {
-        // Reverse hash for display (Bitcoin sends hashes in little-endian)
-        var reversed_hash: [32]u8 = undefined;
-        for (self.hash, 0..) |byte, i| {
-            reversed_hash[31 - i] = byte;
-        }
-
-        // Convert to hex
-        var hex: [64]u8 = undefined;
-        for (reversed_hash, 0..) |byte, i| {
-            const high: u8 = @intCast((byte >> 4) & 0x0f);
-            const low: u8 = @intCast(byte & 0x0f);
-            hex[i * 2] = if (high < 10) @as(u8, '0') + high else @as(u8, 'a') + (high - 10);
-            hex[i * 2 + 1] = if (low < 10) @as(u8, '0') + low else @as(u8, 'a') + (low - 10);
-        }
-        return hex;
+        return hashToHex(self.hash);
     }
 };
 
@@ -227,6 +216,208 @@ pub const InvMessage = struct {
     }
 };
 
+// Transaction Input
+pub const TxInput = struct {
+    prevout_hash: [32]u8, // Previous transaction hash (little-endian)
+    prevout_index: u32, // Index of output in previous transaction
+    script: []u8, // Unlocking script (signature script)
+    sequence: u32, // Sequence number
+
+    pub fn serialize(self: TxInput, writer: anytype) !void {
+        try writer.writeAll(&self.prevout_hash);
+        try writer.writeInt(u32, self.prevout_index, .little);
+        try writeVarInt(writer, self.script.len);
+        try writer.writeAll(self.script);
+        try writer.writeInt(u32, self.sequence, .little);
+    }
+
+    pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) !TxInput {
+        // Read previous output hash
+        var prevout_hash: [32]u8 = undefined;
+        _ = try reader.readAll(&prevout_hash);
+
+        // Read previous output index
+        const prevout_index = try reader.readInt(u32, .little);
+
+        // Read script length (CompactSize)
+        const script_len = try readVarInt(reader);
+
+        // Read script
+        const script = try allocator.alloc(u8, script_len);
+        errdefer allocator.free(script);
+        _ = try reader.readAll(script);
+
+        // Read sequence
+        const sequence = try reader.readInt(u32, .little);
+
+        return TxInput{
+            .prevout_hash = prevout_hash,
+            .prevout_index = prevout_index,
+            .script = script,
+            .sequence = sequence,
+        };
+    }
+
+    pub fn deinit(self: TxInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.script);
+    }
+
+    /// Convert prevout hash to hex string (reversed for display)
+    pub fn prevoutHashHex(self: TxInput) [64]u8 {
+        return hashToHex(self.prevout_hash);
+    }
+};
+
+// Transaction Output
+pub const TxOutput = struct {
+    value: u64, // Value in satoshis
+    script: []u8, // Locking script (pubkey script)
+
+    pub fn serialize(self: TxOutput, writer: anytype) !void {
+        try writer.writeInt(u64, self.value, .little);
+        try writeVarInt(writer, self.script.len);
+        try writer.writeAll(self.script);
+    }
+
+    pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) !TxOutput {
+        // Read value (satoshis)
+        const value = try reader.readInt(u64, .little);
+
+        // Read script length (CompactSize)
+        const script_len = try readVarInt(reader);
+
+        // Read script
+        const script = try allocator.alloc(u8, script_len);
+        errdefer allocator.free(script);
+        _ = try reader.readAll(script);
+
+        return TxOutput{
+            .value = value,
+            .script = script,
+        };
+    }
+
+    pub fn deinit(self: TxOutput, allocator: std.mem.Allocator) void {
+        allocator.free(self.script);
+    }
+
+    /// Convert value to BTC (float)
+    pub fn valueBtc(self: TxOutput) f64 {
+        return @as(f64, @floatFromInt(self.value)) / 100_000_000.0;
+    }
+};
+
+// Bitcoin Transaction
+pub const Transaction = struct {
+    version: i32,
+    inputs: []TxInput,
+    outputs: []TxOutput,
+    locktime: u32,
+
+    pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) !Transaction {
+        // Read version
+        const version = try reader.readInt(i32, .little);
+
+        // Read input count (CompactSize)
+        const input_count = try readVarInt(reader);
+
+        // Read inputs
+        const inputs = try allocator.alloc(TxInput, input_count);
+        errdefer {
+            for (inputs) |*input| {
+                input.deinit(allocator);
+            }
+            allocator.free(inputs);
+        }
+
+        for (inputs) |*input| {
+            input.* = try TxInput.deserialize(reader, allocator);
+        }
+
+        // Read output count (CompactSize)
+        const output_count = try readVarInt(reader);
+
+        // Read outputs
+        const outputs = try allocator.alloc(TxOutput, output_count);
+        errdefer {
+            for (outputs) |*output| {
+                output.deinit(allocator);
+            }
+            allocator.free(outputs);
+        }
+
+        for (outputs) |*output| {
+            output.* = try TxOutput.deserialize(reader, allocator);
+        }
+
+        // Read locktime
+        const locktime = try reader.readInt(u32, .little);
+
+        return Transaction{
+            .version = version,
+            .inputs = inputs,
+            .outputs = outputs,
+            .locktime = locktime,
+        };
+    }
+
+    pub fn serialize(self: Transaction, writer: anytype) !void {
+        try writer.writeInt(i32, self.version, .little);
+
+        // Write input count
+        try writeVarInt(writer, self.inputs.len);
+
+        // Write inputs
+        for (self.inputs) |input| {
+            try input.serialize(writer);
+        }
+
+        // Write output count
+        try writeVarInt(writer, self.outputs.len);
+
+        // Write outputs
+        for (self.outputs) |output| {
+            try output.serialize(writer);
+        }
+
+        try writer.writeInt(u32, self.locktime, .little);
+    }
+
+    pub fn deinit(self: Transaction, allocator: std.mem.Allocator) void {
+        for (self.inputs) |*input| {
+            input.deinit(allocator);
+        }
+        allocator.free(self.inputs);
+
+        for (self.outputs) |*output| {
+            output.deinit(allocator);
+        }
+        allocator.free(self.outputs);
+    }
+
+    /// Calculate transaction ID (double SHA256 of serialized transaction)
+    pub fn txid(self: Transaction, allocator: std.mem.Allocator) ![32]u8 {
+        // Serialize transaction
+        var buffer = std.ArrayList(u8).empty;
+        defer buffer.deinit(allocator);
+        try self.serialize(buffer.writer(allocator));
+
+        // Calculate double SHA256
+        var h1: [32]u8 = undefined;
+        var h2: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(buffer.items, &h1, .{});
+        std.crypto.hash.sha2.Sha256.hash(&h1, &h2, .{});
+
+        return h2;
+    }
+
+    /// Get transaction ID as hex string (for display)
+    pub fn txidHex(self: Transaction, allocator: std.mem.Allocator) ![64]u8 {
+        const txid_bytes = try self.txid(allocator);
+        return hashToHex(txid_bytes);
+    }
+};
+
 fn writeVarInt(writer: anytype, value: u64) !void {
     if (value < 0xfd) {
         try writer.writeByte(@intCast(value));
@@ -253,6 +444,26 @@ fn readVarInt(reader: anytype) !u64 {
     } else {
         return try reader.readInt(u64, .little);
     }
+}
+
+/// Convert a 32-byte hash to hex string (reverses bytes for display)
+/// Bitcoin hashes are sent in little-endian, so this reverses them for display
+pub fn hashToHex(hash: [32]u8) [64]u8 {
+    // Reverse hash for display (Bitcoin sends hashes in little-endian)
+    var reversed_hash: [32]u8 = undefined;
+    for (hash, 0..) |byte, i| {
+        reversed_hash[31 - i] = byte;
+    }
+
+    // Convert to hex
+    var hex: [64]u8 = undefined;
+    for (reversed_hash, 0..) |byte, i| {
+        const high: u8 = @intCast((byte >> 4) & 0x0f);
+        const low: u8 = @intCast(byte & 0x0f);
+        hex[i * 2] = if (high < 10) @as(u8, '0') + high else @as(u8, 'a') + (high - 10);
+        hex[i * 2 + 1] = if (low < 10) @as(u8, '0') + low else @as(u8, 'a') + (low - 10);
+    }
+    return hex;
 }
 
 pub fn calculateChecksum(payload: []const u8) u32 {
