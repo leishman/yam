@@ -52,6 +52,10 @@ pub const Connection = struct {
 /// Metadata about a node discovered during connection
 pub const NodeMetadata = struct {
     user_agent: ?[]const u8 = null,
+    ever_connected: bool = false,
+    latency_ms: ?u64 = null,
+    pending_ping_time: ?i64 = null,
+    pending_ping_nonce: ?u64 = null,
     // Future: services, protocol_version, start_height, etc.
 
     pub fn deinit(self: *NodeMetadata, allocator: std.mem.Allocator) void {
@@ -108,6 +112,7 @@ pub const ManagerCommand = union(enum) {
     disconnect: usize, // node_index
     set_streaming: struct { node_index: usize, enabled: bool },
     send_getaddr: usize, // node_index
+    send_ping: usize, // node_index
 };
 
 /// Graph edge: source told us about node
@@ -266,6 +271,10 @@ pub const Explorer = struct {
             try self.cmdMempool(stdout);
         } else if (std.mem.eql(u8, cmd, "status") or std.mem.eql(u8, cmd, "s")) {
             try self.cmdStatus(stdout);
+        } else if (std.mem.eql(u8, cmd, "ping")) {
+            try self.cmdPing(&iter, stdout);
+        } else if (std.mem.eql(u8, cmd, "export") or std.mem.eql(u8, cmd, "x")) {
+            try self.cmdExport(&iter, stdout);
         } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "h") or std.mem.eql(u8, cmd, "?")) {
             try self.cmdHelp(stdout);
         } else if (std.mem.eql(u8, cmd, "quit") or std.mem.eql(u8, cmd, "exit") or std.mem.eql(u8, cmd, "q")) {
@@ -336,11 +345,10 @@ pub const Explorer = struct {
             const addr_str = node.format();
             const addr = std.mem.sliceTo(&addr_str, ' ');
 
-            // Get user_agent if we have it
-            const user_agent: []const u8 = if (self.node_metadata.get(node_index)) |meta|
-                meta.user_agent orelse ""
-            else
-                "";
+            // Get metadata if we have it
+            const metadata = self.node_metadata.get(node_index);
+            const user_agent: []const u8 = if (metadata) |m| m.user_agent orelse "" else "";
+            const latency_ms = if (metadata) |m| m.latency_ms else null;
 
             if (self.connections.get(node_index)) |conn| {
                 const status = switch (conn.state) {
@@ -349,16 +357,23 @@ pub const Explorer = struct {
                     .connected => .{ Color.green, "connected" },
                     .failed => .{ Color.red, "failed" },
                 };
-                if (user_agent.len > 0) {
-                    try writer.print("  [{d:>3}] {s:<21} {s}{s:<12}{s} {s}{s}{s}\n", .{
-                        node_index, addr, status[0], status[1], Color.reset,
-                        Color.dim, user_agent, Color.reset,
-                    });
-                } else {
-                    try writer.print("  [{d:>3}] {s:<21} {s}{s}{s}\n", .{
-                        node_index, addr, status[0], status[1], Color.reset,
-                    });
+
+                // Base line: index, address, status
+                try writer.print("  [{d:>3}] {s:<21} {s}{s:<12}{s}", .{
+                    node_index, addr, status[0], status[1], Color.reset,
+                });
+
+                // Add latency if available
+                if (latency_ms) |lat| {
+                    try writer.print(" {s}{d}ms{s}", .{ Color.dim, lat, Color.reset });
                 }
+
+                // Add user_agent if available
+                if (user_agent.len > 0) {
+                    try writer.print(" {s}{s}{s}", .{ Color.dim, user_agent, Color.reset });
+                }
+
+                try writer.writeByte('\n');
             } else {
                 try writer.print("  {s}[{d:>3}] {s}{s}\n", .{ Color.dim, node_index, addr, Color.reset });
             }
@@ -733,20 +748,310 @@ pub const Explorer = struct {
         }
 
         const total_nodes = self.known_nodes.items.len;
+        const other = total_nodes -| connected -| connecting -| failed;
         const mempool_size = self.mempool.count();
+
+        // Count transactions with full data vs just seen
+        var tx_with_data: usize = 0;
+        var mempool_iter = self.mempool.valueIterator();
+        while (mempool_iter.next()) |entry| {
+            if (entry.tx_data != null) {
+                tx_with_data += 1;
+            }
+        }
 
         try stdout.print(
             \\{0s}Status:{1s}
             \\  Nodes:       {2s}{3d}{1s} connected / {4d} known
-            \\  Connections: {5s}{6d}{1s} connecting, {7s}{8d}{1s} failed
-            \\  Mempool:     {2s}{9d}{1s} transactions
+            \\  Connections: {5s}{6d}{1s} connecting, {7s}{8d}{1s} failed, {9d} other
+            \\  Mempool:     {2s}{10d}{1s} with data / {11d} seen
             \\
         , .{
-            Color.dim,   Color.reset,
-            Color.green, connected, total_nodes,
+            Color.dim,    Color.reset,
+            Color.green,  connected, total_nodes,
             Color.yellow, connecting,
-            Color.red,   failed,
-            mempool_size,
+            Color.red,    failed, other,
+            tx_with_data, mempool_size,
+        });
+    }
+
+    fn cmdPing(self: *Explorer, iter: *std.mem.TokenIterator(u8, .scalar), stdout: anytype) !void {
+        var count: usize = 0;
+        var has_args = false;
+
+        while (iter.next()) |arg| {
+            has_args = true;
+
+            // Try parsing as range (e.g., 1-10)
+            if (std.mem.indexOfScalar(u8, arg, '-')) |dash_idx| {
+                if (dash_idx > 0 and dash_idx < arg.len - 1) {
+                    const start = std.fmt.parseInt(usize, arg[0..dash_idx], 10) catch null;
+                    const end = std.fmt.parseInt(usize, arg[dash_idx + 1 ..], 10) catch null;
+                    if (start != null and end != null and start.? <= end.?) {
+                        for (start.?..end.? + 1) |idx| {
+                            count += self.pingNode(idx);
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            const idx = std.fmt.parseInt(usize, arg, 10) catch {
+                try stdout.print("{s}Invalid index:{s} {s}\n", .{ Color.red, Color.reset, arg });
+                continue;
+            };
+
+            count += self.pingNode(idx);
+        }
+
+        // No args = ping all connected nodes
+        if (!has_args) {
+            self.mutex.lock();
+            var conn_iter = self.connections.iterator();
+            while (conn_iter.next()) |entry| {
+                if (entry.value_ptr.*.state == .connected) {
+                    self.pending_commands.append(self.allocator, .{ .send_ping = entry.key_ptr.* }) catch {};
+                    count += 1;
+                }
+            }
+            self.mutex.unlock();
+        }
+
+        if (count == 0) {
+            try stdout.print("{s}No connected nodes{s}\n", .{ Color.yellow, Color.reset });
+        } else {
+            try stdout.print("Sent ping to {s}{d}{s} node(s)\n", .{ Color.green, count, Color.reset });
+        }
+    }
+
+    fn pingNode(self: *Explorer, idx: usize) usize {
+        self.mutex.lock();
+        const conn = self.connections.get(idx);
+        const is_connected = conn != null and conn.?.state == .connected;
+        if (is_connected) {
+            self.pending_commands.append(self.allocator, .{ .send_ping = idx }) catch {};
+        }
+        self.mutex.unlock();
+
+        if (is_connected) {
+            return 1;
+        }
+        return 0;
+    }
+
+    fn cmdExport(self: *Explorer, iter: *std.mem.TokenIterator(u8, .scalar), stdout: anytype) !void {
+        const export_type = iter.next() orelse {
+            try stdout.print("Usage: {s}export <nodes|mempool>{s}\n", .{ Color.dim, Color.reset });
+            return;
+        };
+
+        if (std.mem.eql(u8, export_type, "nodes")) {
+            try self.exportNodes(stdout);
+        } else if (std.mem.eql(u8, export_type, "mempool")) {
+            try self.exportMempool(stdout);
+        } else {
+            try stdout.print("Unknown export type: {s}\n", .{export_type});
+            try stdout.print("Usage: {s}export <nodes|mempool>{s}\n", .{ Color.dim, Color.reset });
+        }
+    }
+
+    fn exportNodes(self: *Explorer, stdout: anytype) !void {
+        const filename = try self.makeTimestampedFilename("nodes", "csv");
+        defer self.allocator.free(filename);
+
+        const file = std.fs.cwd().createFile(filename, .{}) catch |err| {
+            try stdout.print("{s}Error creating file:{s} {s}\n", .{ Color.red, Color.reset, @errorName(err) });
+            return;
+        };
+        defer file.close();
+
+        var buf: [4096]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        const writer = &file_writer.interface;
+
+        // Write CSV header
+        try writer.writeAll("ip,port,user_agent,connection_established,latency_ms\n");
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.known_nodes.items, 0..) |node, i| {
+            const node_index = i + 1;
+
+            // Get IP and port
+            var ip_buf: [16]u8 = undefined;
+            var port: u16 = 0;
+            var ip: []const u8 = "";
+            if (node.address.any.family == std.posix.AF.INET) {
+                const addr = node.address.in;
+                const ip_bytes = @as(*const [4]u8, @ptrCast(&addr.sa.addr));
+                ip = std.fmt.bufPrint(&ip_buf, "{d}.{d}.{d}.{d}", .{
+                    ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3],
+                }) catch continue;
+                port = std.mem.bigToNative(u16, addr.sa.port);
+            } else {
+                continue; // Skip non-IPv4
+            }
+
+            // Get metadata
+            const metadata = self.node_metadata.get(node_index);
+            const user_agent = if (metadata) |m| m.user_agent orelse "" else "";
+            const ever_connected = if (metadata) |m| m.ever_connected else false;
+            const latency_ms = if (metadata) |m| m.latency_ms else null;
+
+            // Write CSV row - escape user_agent if it contains commas
+            try writer.print("{s},{d},", .{ ip, port });
+
+            // Quote user_agent if needed
+            if (std.mem.indexOfScalar(u8, user_agent, ',') != null or
+                std.mem.indexOfScalar(u8, user_agent, '"') != null)
+            {
+                try writer.writeByte('"');
+                for (user_agent) |c| {
+                    if (c == '"') {
+                        try writer.writeAll("\"\"");
+                    } else {
+                        try writer.writeByte(c);
+                    }
+                }
+                try writer.writeByte('"');
+            } else {
+                try writer.writeAll(user_agent);
+            }
+
+            try writer.print(",{s},", .{if (ever_connected) "true" else "false"});
+
+            if (latency_ms) |lat| {
+                try writer.print("{d}", .{lat});
+            }
+            try writer.writeByte('\n');
+        }
+
+        try writer.flush();
+        try stdout.print("Exported {s}{d}{s} nodes to {s}{s}{s}\n", .{
+            Color.green, self.known_nodes.items.len, Color.reset,
+            Color.green, filename,                   Color.reset,
+        });
+    }
+
+    fn exportMempool(self: *Explorer, stdout: anytype) !void {
+        const filename = try self.makeTimestampedFilename("mempool", "csv");
+        defer self.allocator.free(filename);
+
+        const file = std.fs.cwd().createFile(filename, .{}) catch |err| {
+            try stdout.print("{s}Error creating file:{s} {s}\n", .{ Color.red, Color.reset, @errorName(err) });
+            return;
+        };
+        defer file.close();
+
+        var buf: [4096]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        const writer = &file_writer.interface;
+
+        // Write CSV header
+        try writer.writeAll("txid,node_ip,node_user_agent,announcement_timestamp\n");
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var row_count: usize = 0;
+        var iter = self.mempool.iterator();
+        while (iter.next()) |entry| {
+            const txid = entry.key_ptr.*;
+            const mp_entry = entry.value_ptr;
+
+            for (mp_entry.announcements.items) |ann| {
+                // Get node info
+                if (ann.node_index == 0 or ann.node_index > self.known_nodes.items.len) continue;
+                const node = self.known_nodes.items[ann.node_index - 1];
+
+                // Get IP
+                var ip_buf: [22]u8 = undefined;
+                var ip: []const u8 = "";
+                if (node.address.any.family == std.posix.AF.INET) {
+                    const addr = node.address.in;
+                    const ip_bytes = @as(*const [4]u8, @ptrCast(&addr.sa.addr));
+                    const port = std.mem.bigToNative(u16, addr.sa.port);
+                    ip = std.fmt.bufPrint(&ip_buf, "{d}.{d}.{d}.{d}:{d}", .{
+                        ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3], port,
+                    }) catch continue;
+                } else {
+                    continue;
+                }
+
+                // Get user_agent
+                const metadata = self.node_metadata.get(ann.node_index);
+                const user_agent = if (metadata) |m| m.user_agent orelse "" else "";
+
+                // Write row
+                try writer.print("{s},{s},", .{ txid, ip });
+
+                // Quote user_agent if needed
+                if (std.mem.indexOfScalar(u8, user_agent, ',') != null or
+                    std.mem.indexOfScalar(u8, user_agent, '"') != null)
+                {
+                    try writer.writeByte('"');
+                    for (user_agent) |c| {
+                        if (c == '"') {
+                            try writer.writeAll("\"\"");
+                        } else {
+                            try writer.writeByte(c);
+                        }
+                    }
+                    try writer.writeByte('"');
+                } else {
+                    try writer.writeAll(user_agent);
+                }
+
+                try writer.print(",{d}\n", .{ann.timestamp});
+                row_count += 1;
+            }
+        }
+
+        try writer.flush();
+        try stdout.print("Exported {s}{d}{s} announcements to {s}{s}{s}\n", .{
+            Color.green, row_count, Color.reset,
+            Color.green, filename,  Color.reset,
+        });
+    }
+
+    fn makeTimestampedFilename(self: *Explorer, prefix: []const u8, ext: []const u8) ![]u8 {
+        const now = std.time.timestamp();
+
+        // Convert timestamp to date/time components
+        // Days since epoch
+        const days_since_epoch = @divFloor(now, 86400);
+        const secs_today: u64 = @intCast(@mod(now, 86400));
+
+        // Calculate year, month, day
+        var year: i32 = 1970;
+        var remaining_days: i64 = days_since_epoch;
+
+        while (true) {
+            const days_in_year: i64 = if (@mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0)) 366 else 365;
+            if (remaining_days < days_in_year) break;
+            remaining_days -= days_in_year;
+            year += 1;
+        }
+
+        const is_leap = @mod(year, 4) == 0 and (@mod(year, 100) != 0 or @mod(year, 400) == 0);
+        const days_in_month = [_]u8{ 31, if (is_leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+        var month: u8 = 1;
+        for (days_in_month) |dim| {
+            if (remaining_days < dim) break;
+            remaining_days -= dim;
+            month += 1;
+        }
+        const day: u8 = @intCast(remaining_days + 1);
+
+        const hour: u8 = @intCast(secs_today / 3600);
+        const minute: u8 = @intCast((secs_today % 3600) / 60);
+        const second: u8 = @intCast(secs_today % 60);
+
+        // Format: prefix_YYYY-MM-DD_HHMMSS.ext
+        return std.fmt.allocPrint(self.allocator, "{s}_{d:0>4}-{d:0>2}-{d:0>2}_{d:0>2}{d:0>2}{d:0>2}.{s}", .{
+            prefix, year, month, day, hour, minute, second, ext,
         });
     }
 
@@ -760,9 +1065,11 @@ pub const Explorer = struct {
             \\  {0s}disconnect, dc{1s} <n>     Disconnect from node(s)
             \\  {0s}stream{1s} <n> on|off      Toggle message streaming
             \\  {0s}getaddr, ga{1s} [n...]     Request addresses (all if no args)
+            \\  {0s}ping{1s} [n...]            Measure latency (all if no args)
             \\  {0s}graph{1s}                  Show network graph
             \\  {0s}mempool, mp{1s}            Show observed mempool transactions
             \\  {0s}status, s{1s}              Show connection status
+            \\  {0s}export, x{1s} <nodes|mempool>  Export data to CSV
             \\  {0s}help, h, ?{1s}             Show this help
             \\  {0s}quit, q{1s}                Exit
             \\
@@ -799,6 +1106,7 @@ pub const Explorer = struct {
                 .disconnect => |idx| self.closeConnectionByIndex(idx),
                 .set_streaming => |s| self.setStreaming(s.node_index, s.enabled),
                 .send_getaddr => |idx| self.sendGetaddr(idx),
+                .send_ping => |idx| self.sendPing(idx),
             }
         }
     }
@@ -858,6 +1166,29 @@ pub const Explorer = struct {
         const checksum = yam.calculateChecksum(&.{});
         const header = yam.MessageHeader.new("getaddr", 0, checksum);
         _ = std.posix.write(conn.socket, std.mem.asBytes(&header)) catch {};
+    }
+
+    fn sendPing(self: *Explorer, node_index: usize) void {
+        const conn = self.connections.get(node_index) orelse return;
+
+        // Generate random nonce
+        var nonce: u64 = undefined;
+        std.posix.getrandom(std.mem.asBytes(&nonce)) catch return;
+
+        // Store pending ping info in metadata
+        const entry = self.node_metadata.getOrPut(node_index) catch return;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = .{};
+        }
+        entry.value_ptr.pending_ping_nonce = nonce;
+        entry.value_ptr.pending_ping_time = std.time.milliTimestamp();
+
+        // Send ping with nonce as payload
+        const payload = std.mem.asBytes(&nonce);
+        const checksum = yam.calculateChecksum(payload);
+        const header = yam.MessageHeader.new("ping", @intCast(payload.len), checksum);
+        _ = std.posix.write(conn.socket, std.mem.asBytes(&header)) catch return;
+        _ = std.posix.write(conn.socket, payload) catch return;
     }
 
     fn pollConnections(self: *Explorer) void {
@@ -1029,6 +1360,8 @@ pub const Explorer = struct {
 
         if (std.mem.eql(u8, cmd, "ping")) {
             self.sendPong(socket, payload[0..payload_read]);
+        } else if (std.mem.eql(u8, cmd, "pong")) {
+            self.handlePongMessage(node_index, payload[0..payload_read]);
         } else if (std.mem.eql(u8, cmd, "addr")) {
             self.handleAddrMessage(node_index, conn2.?, payload[0..payload_read]);
         } else if (std.mem.eql(u8, cmd, "inv")) {
@@ -1088,6 +1421,15 @@ pub const Explorer = struct {
 
         if (conn.handshake_state.received_version and conn.handshake_state.received_verack) {
             conn.state = .connected;
+
+            // Mark this node as having been connected at some point
+            const entry = self.node_metadata.getOrPut(node_index) catch null;
+            if (entry) |e| {
+                if (!e.found_existing) {
+                    e.value_ptr.* = .{};
+                }
+                e.value_ptr.ever_connected = true;
+            }
         }
     }
 
@@ -1098,6 +1440,44 @@ pub const Explorer = struct {
         _ = std.posix.write(socket, std.mem.asBytes(&header)) catch {};
         if (ping_payload.len > 0) {
             _ = std.posix.write(socket, ping_payload) catch {};
+        }
+    }
+
+    fn handlePongMessage(self: *Explorer, node_index: usize, payload: []const u8) void {
+        // Pong should contain the same nonce we sent in ping
+        if (payload.len < 8) return;
+
+        const received_nonce = std.mem.readInt(u64, payload[0..8], .little);
+        const now = std.time.milliTimestamp();
+
+        // Check if this matches our pending ping
+        const metadata = self.node_metadata.getPtr(node_index) orelse return;
+
+        if (metadata.pending_ping_nonce) |expected_nonce| {
+            if (received_nonce == expected_nonce) {
+                if (metadata.pending_ping_time) |send_time| {
+                    const latency: u64 = @intCast(now - send_time);
+                    metadata.latency_ms = latency;
+
+                    // Only print if streaming is enabled for this connection
+                    if (self.connections.get(node_index)) |conn| {
+                        if (conn.streaming) {
+                            var buf: [128]u8 = undefined;
+                            var stdout_writer = self.stdout.writer(&buf);
+                            const stdout = &stdout_writer.interface;
+                            stdout.print("{s}[{d}]{s} pong: {s}{d}ms{s}\n{s}>{s} ", .{
+                                Color.dim, node_index, Color.reset,
+                                Color.green, latency, Color.reset,
+                                Color.green, Color.reset,
+                            }) catch {};
+                            stdout.flush() catch {};
+                        }
+                    }
+                }
+                // Clear pending ping
+                metadata.pending_ping_nonce = null;
+                metadata.pending_ping_time = null;
+            }
         }
     }
 
