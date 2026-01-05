@@ -5,6 +5,10 @@ const std = @import("std");
 const yam = @import("root.zig");
 const message_utils = @import("message_utils.zig");
 
+/// Maximum payload size for peer messages (4 MB)
+/// This limit prevents memory exhaustion from malicious or misbehaving peers
+const MAX_PAYLOAD_SIZE: u32 = 4_000_000;
+
 /// Courier manages a connection to a single Bitcoin peer
 pub const Courier = struct {
     peer: yam.PeerInfo,
@@ -78,7 +82,7 @@ pub const Courier = struct {
             // (courier.zig enforces stricter limits for individual peer connections)
             const stream = self.stream orelse return error.NotConnected;
             const message = try message_utils.readMessage(stream, self.allocator, .{
-                .max_payload_size = 4_000_000,
+                .max_payload_size = MAX_PAYLOAD_SIZE,
                 .verify_checksum = true,
             });
             defer if (message.payload.len > 0) self.allocator.free(message.payload);
@@ -143,7 +147,7 @@ pub const Courier = struct {
             const message = blk: {
                 const stream = self.stream orelse return error.NotConnected;
                 break :blk message_utils.readMessage(stream, self.allocator, .{
-                    .max_payload_size = 4_000_000,
+                    .max_payload_size = MAX_PAYLOAD_SIZE,
                     .verify_checksum = true,
                 });
             } catch |err| {
@@ -181,7 +185,7 @@ pub const Courier = struct {
             const message = blk: {
                 const stream = self.stream orelse return error.NotConnected;
                 break :blk message_utils.readMessage(stream, self.allocator, .{
-                    .max_payload_size = 4_000_000,
+                    .max_payload_size = MAX_PAYLOAD_SIZE,
                     .verify_checksum = true,
                 });
             } catch |err| {
