@@ -78,6 +78,7 @@ Status:
 > export mempool        # export to mempool_2025-01-04_143052.csv
 > export graph          # export to graph_2025-01-04_143052.csv
 > export graph dot      # export to graph_2025-01-04_143052.dot (graphviz)
+> export tx abc123...   # export to abc123...hex
 
 > stream 1 on           # watch raw messages from node 1
 > dc 1                  # disconnect node 1
