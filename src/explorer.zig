@@ -221,8 +221,20 @@ pub const Explorer = struct {
 
         // Try to raise file descriptor limit
         const fd_limit = raiseFileDescriptorLimit();
-        try stdout.print("{s}Yam Explorer{s} - type 'help' for commands\n", .{ Color.green, Color.reset });
-        try stdout.print("{s}Max connections: {d}{s}\n\n", .{ Color.dim, fd_limit, Color.reset });
+
+        // ASCII art banner
+        try stdout.print("{s}", .{Color.yellow});
+        try stdout.writeAll(
+            \\  __   __   ___    __  __
+            \\  \ \ / /  / _ \  |  \/  |
+            \\   \ V /  | |_| | | |\/| |
+            \\    | |   |  _  | | |  | |
+            \\    |_|   |_| |_| |_|  |_|
+            \\    ᠶᠠᠮ
+        );
+        try stdout.print("{s}\n\n", .{Color.reset});
+        try stdout.print("  {s}Bitcoin P2P Explorer{s} - type 'help' for commands\n", .{ Color.dim, Color.reset });
+        try stdout.print("  {s}Max connections: {d}{s}\n\n", .{ Color.dim, fd_limit, Color.reset });
         try stdout.flush();
 
         self.manager_thread = try std.Thread.spawn(.{}, managerThread, .{self});
