@@ -52,11 +52,16 @@ pub const Connection = struct {
 /// Metadata about a node discovered during connection
 pub const NodeMetadata = struct {
     user_agent: ?[]const u8 = null,
+    services: u64 = 0,
     ever_connected: bool = false,
     latency_ms: ?u64 = null,
     pending_ping_time: ?i64 = null,
     pending_ping_nonce: ?u64 = null,
-    // Future: services, protocol_version, start_height, etc.
+    // Future: protocol_version, start_height, etc.
+
+    pub fn canServeWitnesses(self: NodeMetadata) bool {
+        return (self.services & yam.ServiceFlags.NODE_WITNESS) != 0;
+    }
 
     pub fn deinit(self: *NodeMetadata, allocator: std.mem.Allocator) void {
         if (self.user_agent) |ua| {
@@ -882,7 +887,7 @@ pub const Explorer = struct {
 
     fn cmdExport(self: *Explorer, iter: *std.mem.TokenIterator(u8, .scalar), stdout: anytype) !void {
         const export_type = iter.next() orelse {
-            try stdout.print("Usage: {s}export <nodes|mempool|graph> [csv|dot]{s}\n", .{ Color.dim, Color.reset });
+            try stdout.print("Usage: {s}export <nodes|mempool|graph|tx> [csv|dot|txid]{s}\n", .{ Color.dim, Color.reset });
             return;
         };
 
@@ -899,9 +904,15 @@ pub const Explorer = struct {
             } else {
                 try stdout.print("Unknown format: {s}. Use 'csv' or 'dot'\n", .{format});
             }
+        } else if (std.mem.eql(u8, export_type, "tx")) {
+            const txid = iter.next() orelse {
+                try stdout.print("Usage: {s}export tx <txid>{s}\n", .{ Color.dim, Color.reset });
+                return;
+            };
+            try self.exportTx(txid, stdout);
         } else {
             try stdout.print("Unknown export type: {s}\n", .{export_type});
-            try stdout.print("Usage: {s}export <nodes|mempool|graph> [csv|dot]{s}\n", .{ Color.dim, Color.reset });
+            try stdout.print("Usage: {s}export <nodes|mempool|graph|tx> [csv|dot|txid]{s}\n", .{ Color.dim, Color.reset });
         }
     }
 
@@ -1102,6 +1113,56 @@ pub const Explorer = struct {
         try stdout.print("View at: {s}https://dreampuf.github.io/GraphvizOnline/{s}\n", .{ Color.dim, Color.reset });
     }
 
+    fn exportTx(self: *Explorer, txid: []const u8, stdout: anytype) !void {
+        // Validate txid length
+        if (txid.len != 64) {
+            try stdout.print("{s}Invalid txid:{s} must be 64 hex characters\n", .{ Color.red, Color.reset });
+            return;
+        }
+
+        // Make sure we can find the transaction and it has data
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const entry = self.mempool.get(txid) orelse {
+            try stdout.print("{s}Transaction not found:{s} {s}\n", .{ Color.red, Color.reset, txid });
+            return;
+        };
+        const tx_data = entry.tx_data orelse {
+            try stdout.print("{s}Transaction data not available:{s} only seen in INV, not yet received\n", .{ Color.red, Color.reset });
+            return;
+        };
+
+        // Create filename and file
+        const filename = try std.fmt.allocPrint(self.allocator, "{s}.hex", .{txid});
+        defer self.allocator.free(filename);
+
+        const file = std.fs.cwd().createFile(filename, .{}) catch |err| {
+            try stdout.print("{s}Error creating file:{s} {s}\n", .{ Color.red, Color.reset, @errorName(err) });
+            return;
+        };
+        defer file.close();
+
+        var buf: [4096]u8 = undefined;
+        var file_writer = file.writer(&buf);
+        const writer = &file_writer.interface;
+
+        // Write hex
+        for (tx_data) |byte| {
+            var hex_byte: [2]u8 = undefined;
+            _ = std.fmt.bufPrint(&hex_byte, "{x:0>2}", .{byte}) catch unreachable;
+            file.writeAll(&hex_byte) catch |err| {
+                try stdout.print("{s}Error writing file:{s} {s}\n", .{ Color.red, Color.reset, @errorName(err) });
+                return;
+            };
+        }
+
+        try writer.flush();
+        try stdout.print("Exported transaction to {s}{s}{s} ({d} bytes)\n", .{
+            Color.green, filename, Color.reset, tx_data.len,
+        });
+    }
+
     fn makeTimestampedFilename(self: *Explorer, prefix: []const u8, ext: []const u8) ![]u8 {
         const now = std.time.timestamp();
 
@@ -1156,7 +1217,7 @@ pub const Explorer = struct {
             \\  {0s}graph{1s}                  Show network graph
             \\  {0s}mempool, mp{1s}            Show observed mempool transactions
             \\  {0s}status, s{1s}              Show connection status
-            \\  {0s}export, x{1s} <nodes|mempool|graph> [csv|dot]  Export data
+            \\  {0s}export, x{1s} <nodes|mempool|graph|tx> [format|txid]  Export data
             \\  {0s}help, h, ?{1s}             Show this help
             \\  {0s}quit, q{1s}                Exit
             \\
@@ -1517,6 +1578,7 @@ pub const Explorer = struct {
                             e.value_ptr.* = .{};
                         }
                         e.value_ptr.user_agent = ua;
+                        e.value_ptr.services = version_msg.services;
                     } else {
                         self.allocator.free(ua);
                     }
@@ -1683,8 +1745,12 @@ pub const Explorer = struct {
                     };
                     new_tx_count += 1;
 
-                    // Request the full transaction
-                    tx_invs.append(self.allocator, inv) catch {};
+                    // Request the full transaction (with witness if peer supports it)
+                    const use_witness = if (self.node_metadata.get(node_index)) |m| m.canServeWitnesses() else false;
+                    tx_invs.append(self.allocator, .{
+                        .type = if (use_witness) .msg_witness_tx else inv.type,
+                        .hash = inv.hash,
+                    }) catch {};
                 }
             }
         }
