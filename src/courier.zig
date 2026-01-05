@@ -140,11 +140,13 @@ pub const Courier = struct {
             if (elapsed > timeout_ms) return false;
 
             // Use shared message reading utility with 4 MB limit and checksum verification
-            const stream = self.stream orelse return false;
-            const message = message_utils.readMessage(stream, self.allocator, .{
-                .max_payload_size = 4_000_000,
-                .verify_checksum = true,
-            }) catch |err| {
+            const message = blk: {
+                const stream = self.stream orelse return error.NotConnected;
+                break :blk message_utils.readMessage(stream, self.allocator, .{
+                    .max_payload_size = 4_000_000,
+                    .verify_checksum = true,
+                });
+            } catch |err| {
                 if (err == error.WouldBlock) continue;
                 return false;
             };
@@ -176,11 +178,13 @@ pub const Courier = struct {
             if (elapsed > timeout_ms) return null;
 
             // Use shared message reading utility with 4 MB limit and checksum verification
-            const stream = self.stream orelse return null;
-            const message = message_utils.readMessage(stream, self.allocator, .{
-                .max_payload_size = 4_000_000,
-                .verify_checksum = true,
-            }) catch |err| {
+            const message = blk: {
+                const stream = self.stream orelse return error.NotConnected;
+                break :blk message_utils.readMessage(stream, self.allocator, .{
+                    .max_payload_size = 4_000_000,
+                    .verify_checksum = true,
+                });
+            } catch |err| {
                 if (err == error.WouldBlock) continue;
                 return null;
             };
