@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const yam = @import("root.zig");
+const message_utils = @import("message_utils.zig");
 
 /// Courier manages a connection to a single Bitcoin peer
 pub const Courier = struct {
@@ -73,7 +74,13 @@ pub const Courier = struct {
                 return error.HandshakeTimeout;
             }
 
-            const message = try self.readMessage();
+            // Use shared message reading utility with 4 MB limit and checksum verification
+            // (courier.zig enforces stricter limits for individual peer connections)
+            const stream = self.stream orelse return error.NotConnected;
+            const message = try message_utils.readMessage(stream, self.allocator, .{
+                .max_payload_size = 4_000_000,
+                .verify_checksum = true,
+            });
             defer if (message.payload.len > 0) self.allocator.free(message.payload);
 
             const cmd = std.mem.sliceTo(&message.header.command, 0);
@@ -132,7 +139,12 @@ pub const Courier = struct {
             const elapsed: u64 = @intCast(std.time.milliTimestamp() - start);
             if (elapsed > timeout_ms) return false;
 
-            const message = self.readMessage() catch |err| {
+            // Use shared message reading utility with 4 MB limit and checksum verification
+            const stream = self.stream orelse return false;
+            const message = message_utils.readMessage(stream, self.allocator, .{
+                .max_payload_size = 4_000_000,
+                .verify_checksum = true,
+            }) catch |err| {
                 if (err == error.WouldBlock) continue;
                 return false;
             };
@@ -155,6 +167,50 @@ pub const Courier = struct {
         }
     }
 
+    /// Wait for a reject message (returns reason if rejected, null if no reject)
+    pub fn waitForReject(self: *Courier, timeout_ms: u64) !?[]u8 {
+        const start = std.time.milliTimestamp();
+
+        while (true) {
+            const elapsed: u64 = @intCast(std.time.milliTimestamp() - start);
+            if (elapsed > timeout_ms) return null;
+
+            // Use shared message reading utility with 4 MB limit and checksum verification
+            const stream = self.stream orelse return null;
+            const message = message_utils.readMessage(stream, self.allocator, .{
+                .max_payload_size = 4_000_000,
+                .verify_checksum = true,
+            }) catch |err| {
+                if (err == error.WouldBlock) continue;
+                return null;
+            };
+
+            const cmd = std.mem.sliceTo(&message.header.command, 0);
+
+            if (std.mem.eql(u8, cmd, "reject")) {
+                var fbs = std.io.fixedBufferStream(message.payload);
+                const reject = yam.RejectMessage.deserialize(fbs.reader(), self.allocator) catch {
+                    self.allocator.free(message.payload);
+                    return try self.allocator.dupe(u8, "unknown reject");
+                };
+                defer {
+                    self.allocator.free(reject.message);
+                    self.allocator.free(reject.data);
+                }
+
+                // Keep the reason, free the rest
+                if (message.payload.len > 0) self.allocator.free(message.payload);
+                return reject.reason;
+            } else if (std.mem.eql(u8, cmd, "ping")) {
+                // Respond to pings
+                try self.sendMessage("pong", message.payload);
+                if (message.payload.len > 0) self.allocator.free(message.payload);
+            } else {
+                if (message.payload.len > 0) self.allocator.free(message.payload);
+            }
+        }
+    }
+
     fn sendMessage(self: *Courier, command: []const u8, payload: []const u8) !void {
         const stream = self.stream orelse return error.NotConnected;
 
@@ -165,42 +221,5 @@ pub const Courier = struct {
         if (payload.len > 0) {
             try stream.writeAll(payload);
         }
-    }
-
-    fn readMessage(self: *Courier) !struct { header: yam.MessageHeader, payload: []u8 } {
-        const stream = self.stream orelse return error.NotConnected;
-
-        var header_buffer: [24]u8 align(4) = undefined;
-        var total_read: usize = 0;
-        while (total_read < header_buffer.len) {
-            const bytes_read = try stream.read(header_buffer[total_read..]);
-            if (bytes_read == 0) return error.ConnectionClosed;
-            total_read += bytes_read;
-        }
-
-        const header_ptr = std.mem.bytesAsValue(yam.MessageHeader, &header_buffer);
-        const header = header_ptr.*;
-
-        if (header.magic != 0xD9B4BEF9) return error.InvalidMagic;
-
-        var payload: []u8 = &.{};
-        if (header.length > 0) {
-            if (header.length > 4_000_000) return error.PayloadTooLarge;
-
-            payload = try self.allocator.alloc(u8, header.length);
-            errdefer self.allocator.free(payload);
-
-            total_read = 0;
-            while (total_read < header.length) {
-                const bytes_read = try stream.read(payload[total_read..]);
-                if (bytes_read == 0) return error.ConnectionClosed;
-                total_read += bytes_read;
-            }
-
-            const calculated_checksum = yam.calculateChecksum(payload);
-            if (calculated_checksum != header.checksum) return error.InvalidChecksum;
-        }
-
-        return .{ .header = header, .payload = payload };
     }
 };
