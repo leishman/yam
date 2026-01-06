@@ -257,6 +257,46 @@ fn buildStatusJson(state: *DashboardState) ![]u8 {
 
     try writer.print("\"mempool\":{{\"count\":{d}}},", .{explorer.mempool.count()});
 
+    try writer.writeAll("\"block\":{");
+    if (explorer.last_block_hash) |hash| {
+        try writer.print("\"hash\":\"{s}\",\"time\":{d},\"seen\":{d}", .{
+            hash,
+            explorer.last_block_time.?,
+            explorer.blocks_seen,
+        });
+    } else {
+        try writer.writeAll("\"hash\":null,\"time\":null,\"seen\":0");
+    }
+    try writer.writeAll("},");
+
+    var ua_counts = std.StringHashMap(usize).init(state.allocator);
+    defer ua_counts.deinit();
+    var meta_iter = explorer.node_metadata.iterator();
+    while (meta_iter.next()) |entry| {
+        if (entry.value_ptr.user_agent) |ua| {
+            const gop = ua_counts.getOrPut(ua) catch continue;
+            if (gop.found_existing) {
+                gop.value_ptr.* += 1;
+            } else {
+                gop.value_ptr.* = 1;
+            }
+        }
+    }
+    try writer.writeAll("\"user_agents\":{");
+    var ua_first = true;
+    var ua_iter = ua_counts.iterator();
+    while (ua_iter.next()) |entry| {
+        if (!ua_first) try writer.writeByte(',');
+        ua_first = false;
+        try writer.writeByte('"');
+        for (entry.key_ptr.*) |c| {
+            if (c == '"' or c == '\\') try writer.writeByte('\\');
+            try writer.writeByte(c);
+        }
+        try writer.print("\":{d}", .{entry.value_ptr.*});
+    }
+    try writer.writeAll("},");
+
     try writer.writeAll("\"node_list\":[");
     var first = true;
     var idx: usize = 0;
@@ -269,7 +309,6 @@ fn buildStatusJson(state: *DashboardState) ![]u8 {
             const addr_fmt = node.format();
             const addr = std.mem.sliceTo(&addr_fmt, ' ');
             const metadata = explorer.node_metadata.get(idx);
-            const latency = if (metadata) |m| m.latency_ms else null;
             const state_str = switch (conn.state) {
                 .connecting => "connecting",
                 .handshaking => "handshaking",
@@ -282,8 +321,19 @@ fn buildStatusJson(state: *DashboardState) ![]u8 {
                 addr,
                 state_str,
             });
-            if (latency) |lat| {
-                try writer.print(",\"latency\":{d}", .{lat});
+            if (metadata) |m| {
+                if (m.latency_ms) |lat| {
+                    try writer.print(",\"latency\":{d}", .{lat});
+                }
+                try writer.print(",\"bytes_in\":{d},\"bytes_out\":{d},\"msgs_in\":{d},\"msgs_out\":{d}", .{
+                    m.bytes_in,
+                    m.bytes_out,
+                    m.msgs_in,
+                    m.msgs_out,
+                });
+                if (m.connect_time) |ct| {
+                    try writer.print(",\"connect_time\":{d}", .{ct});
+                }
             }
             try writer.writeAll("}");
         }
@@ -302,11 +352,25 @@ fn buildStatusJson(state: *DashboardState) ![]u8 {
         first = false;
 
         const mp_entry = entry.value_ptr;
-        try writer.print("{{\"txid\":\"{s}\",\"sources\":{d},\"first_seen\":{d}}}", .{
+        const announcements = mp_entry.announcements.items;
+        try writer.print("{{\"txid\":\"{s}\",\"sources\":{d},\"first_seen\":{d},\"delays\":[", .{
             entry.key_ptr.*,
-            mp_entry.announcements.items.len,
+            announcements.len,
             mp_entry.first_seen,
         });
+        for (announcements[1..], 0..) |ann, i| {
+            if (i > 0) try writer.writeByte(',');
+            try writer.print("{d}", .{ann.timestamp - mp_entry.first_seen});
+        }
+        try writer.writeAll("]");
+        if (mp_entry.tx_data) |data| {
+            try writer.print(",\"size\":{d},\"hex\":\"", .{data.len});
+            for (data) |byte| {
+                try writer.print("{x:0>2}", .{byte});
+            }
+            try writer.writeByte('"');
+        }
+        try writer.writeByte('}');
     }
     try writer.writeAll("],");
 

@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Yam - Bitcoin P2P Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         :root {
             --bg: #1a1a2e;
@@ -56,16 +58,18 @@
         .stat.connected .value { color: var(--success); }
         .stat.connecting .value { color: var(--warning); }
         .stat.failed .value { color: var(--error); }
-        .node-list { max-height: 300px; overflow-y: auto; }
+        .node-list { max-height: 400px; overflow-y: auto; }
         .node-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
             padding: 10px;
             border-bottom: 1px solid rgba(255,255,255,0.1);
         }
         .node-item:last-child { border-bottom: none; }
-        .node-addr { font-family: monospace; font-size: 0.9rem; }
+        .node-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .node-addr { font-family: monospace; font-size: 0.85rem; word-break: break-all; }
         .node-status {
             padding: 3px 8px;
             border-radius: 4px;
@@ -76,11 +80,22 @@
         .node-status.connecting, .node-status.handshaking { background: var(--warning); color: #000; }
         .node-status.failed { background: var(--error); }
         .node-latency { color: #888; font-size: 0.85rem; margin-right: 8px; }
+        .node-bandwidth {
+            font-size: 0.7rem;
+            color: #666;
+            margin-top: 4px;
+            font-family: monospace;
+        }
+        .node-bandwidth span { margin-right: 10px; }
+        .node-bandwidth .in { color: var(--success); }
+        .node-bandwidth .out { color: var(--warning); }
         .tx-list { max-height: 300px; overflow-y: auto; }
         .tx-item {
             padding: 10px;
             border-bottom: 1px solid rgba(255,255,255,0.1);
+            cursor: pointer;
         }
+        .tx-item:hover { background: rgba(255,255,255,0.03); }
         .tx-item:last-child { border-bottom: none; }
         .tx-id {
             font-family: monospace;
@@ -88,6 +103,23 @@
             word-break: break-all;
             color: var(--accent);
         }
+        .tx-details {
+            display: none;
+            margin-top: 8px;
+            padding: 8px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 4px;
+        }
+        .tx-item.expanded .tx-details { display: block; }
+        .tx-hex {
+            font-family: monospace;
+            font-size: 0.65rem;
+            word-break: break-all;
+            color: #888;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+        .tx-size { font-size: 0.75rem; color: var(--warning); margin-bottom: 6px; }
         .tx-meta {
             display: flex;
             justify-content: space-between;
@@ -95,6 +127,25 @@
             font-size: 0.75rem;
             color: #888;
         }
+        .tx-propagation {
+            font-size: 0.7rem;
+            color: var(--success);
+            margin-top: 4px;
+            font-family: monospace;
+        }
+        .tx-search {
+            width: 100%;
+            padding: 8px 12px;
+            margin-bottom: 10px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 6px;
+            color: var(--text);
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+        .tx-search::placeholder { color: #666; }
+        .tx-search:focus { outline: none; border-color: var(--accent); }
         .chart-container { height: 200px; margin-top: 15px; }
         .ws-status {
             position: fixed;
@@ -108,6 +159,18 @@
         .ws-status.disconnected { background: var(--error); }
         .ws-status.connecting { background: var(--warning); color: #000; }
         .empty { color: #666; text-align: center; padding: 20px; }
+        .block-hash {
+            font-family: monospace;
+            font-size: 0.7rem;
+            word-break: break-all;
+            color: #888;
+            margin-top: 15px;
+            padding: 10px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 6px;
+        }
+        .card.map-card { grid-column: 1 / -1; }
+        #peer-map { height: 300px; border-radius: 8px; background: #0d1117; }
     </style>
 </head>
 <body>
@@ -149,6 +212,27 @@
             </div>
         </div>
         <div class="card">
+            <h2>Latest Block</h2>
+            <div class="stat-grid">
+                <div class="stat">
+                    <div class="value" id="blocks-seen">0</div>
+                    <div class="label">Blocks Seen</div>
+                </div>
+                <div class="stat">
+                    <div class="value" id="time-since-block">-</div>
+                    <div class="label">Time Since Block</div>
+                </div>
+            </div>
+            <div class="block-hash" id="block-hash">Waiting for block...</div>
+        </div>
+        <div class="card">
+            <h2>User Agents</h2>
+            <div style="font-size:0.75rem;color:#888;margin-bottom:8px">Format: Agent (count, percentage)</div>
+            <div class="chart-container">
+                <canvas id="ua-chart"></canvas>
+            </div>
+        </div>
+        <div class="card">
             <h2>Connected Nodes</h2>
             <div class="node-list" id="node-list">
                 <div class="empty">No nodes connected yet</div>
@@ -156,16 +240,113 @@
         </div>
         <div class="card">
             <h2>Recent Transactions</h2>
+            <input type="text" id="tx-search" class="tx-search" placeholder="Filter by txid prefix...">
             <div class="tx-list" id="tx-list">
                 <div class="empty">No transactions yet</div>
             </div>
+        </div>
+        <div class="card map-card">
+            <h2>Peer Locations</h2>
+            <div id="peer-map"></div>
         </div>
     </div>
     <script>
         let ws = null;
         let mempoolChart = null;
+        let uaChart = null;
         let mempoolHistory = [];
         const maxHistory = 60;
+        let peerMap = null;
+        let peerMarkers = {};
+        const geoCache = {};
+        const geoFailed = {};
+        const uaColors = ['#e94560','#4ecca3','#ffc107','#00d9ff','#a855f7','#f97316','#22c55e','#3b82f6'];
+        let lastTxs = [];
+        const geoQueue = [];
+        let geoProcessing = false;
+
+        function initMap() {
+            peerMap = L.map('peer-map', { attributionControl: false }).setView([20, 0], 2);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                maxZoom: 19
+            }).addTo(peerMap);
+            setTimeout(() => peerMap.invalidateSize(), 100);
+        }
+
+        function extractIp(addr) {
+            if (!addr) return null;
+            const match = addr.match(/^\[?([^\]:\s]+)\]?:/);
+            return match ? match[1] : addr.split(':')[0];
+        }
+
+        function isPrivateIp(ip) {
+            if (ip.startsWith('127.') || ip.startsWith('10.') || ip.startsWith('192.168.')) return true;
+            if (ip.startsWith('172.')) {
+                const second = parseInt(ip.split('.')[1], 10);
+                if (second >= 16 && second <= 31) return true;
+            }
+            if (ip === '::1' || ip.startsWith('fe80:') || ip.startsWith('fc') || ip.startsWith('fd')) return true;
+            return false;
+        }
+
+        function processGeoQueue() {
+            if (geoProcessing || geoQueue.length === 0) return;
+            geoProcessing = true;
+            const ip = geoQueue.shift();
+            fetch('https://ip-api.com/json/' + ip + '?fields=status,lat,lon,country,city')
+                .then(r => r.json())
+                .then(d => {
+                    if (d.status === 'success') {
+                        geoCache[ip] = { lat: d.lat, lon: d.lon, country: d.country, city: d.city };
+                        addMarkerForIp(ip);
+                    } else {
+                        geoFailed[ip] = true;
+                    }
+                })
+                .catch(() => { geoFailed[ip] = true; })
+                .finally(() => {
+                    geoProcessing = false;
+                    setTimeout(processGeoQueue, 1500);
+                });
+        }
+
+        function addMarkerForIp(ip) {
+            if (peerMarkers[ip] || !geoCache[ip]) return;
+            const geo = geoCache[ip];
+            const marker = L.circleMarker([geo.lat, geo.lon], {
+                radius: 6, fillColor: '#4ecca3', fillOpacity: 0.8, color: '#fff', weight: 1
+            }).addTo(peerMap);
+            marker.bindPopup(esc(ip) + '<br>' + esc(geo.city || '') + ', ' + esc(geo.country || ''));
+            peerMarkers[ip] = marker;
+        }
+
+        function queueGeoLookup(ip) {
+            if (geoCache[ip] || geoFailed[ip] || isPrivateIp(ip) || geoQueue.includes(ip)) return;
+            geoQueue.push(ip);
+            processGeoQueue();
+        }
+
+        function updateMap(nodes) {
+            const seen = new Set();
+            for (const node of nodes) {
+                if (node.state !== 'connected') continue;
+                const ip = extractIp(node.addr);
+                if (!ip) continue;
+                seen.add(ip);
+                if (peerMarkers[ip]) continue;
+                if (geoCache[ip]) {
+                    addMarkerForIp(ip);
+                } else {
+                    queueGeoLookup(ip);
+                }
+            }
+            for (const ip of Object.keys(peerMarkers)) {
+                if (!seen.has(ip)) {
+                    peerMap.removeLayer(peerMarkers[ip]);
+                    delete peerMarkers[ip];
+                }
+            }
+        }
 
         function initChart() {
             const ctx = document.getElementById('mempool-chart').getContext('2d');
@@ -209,10 +390,99 @@
             mempoolChart.update('none');
         }
 
+        const uaLabelPlugin = {
+            id: 'uaLabels',
+            afterDraw(chart) {
+                const { ctx, data } = chart;
+                const dataset = data.datasets[0];
+                const total = dataset.data.reduce((a, b) => a + b, 0);
+                if (total === 0) return;
+                chart.getDatasetMeta(0).data.forEach((arc, i) => {
+                    const value = dataset.data[i];
+                    const pct = ((value / total) * 100).toFixed(0);
+                    if (pct < 5) return;
+                    const { x, y } = arc.tooltipPosition();
+                    ctx.save();
+                    ctx.fillStyle = '#222';
+                    ctx.font = 'bold 11px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(`${pct}%`, x, y);
+                    ctx.restore();
+                });
+            }
+        };
+
+        function initUaChart() {
+            const ctx = document.getElementById('ua-chart').getContext('2d');
+            uaChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: { labels: [], datasets: [{ data: [], backgroundColor: uaColors }] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: {
+                                color: '#eee',
+                                boxWidth: 12,
+                                font: { size: 10 },
+                                generateLabels: function(chart) {
+                                    const data = chart.data;
+                                    const total = data.datasets[0].data.reduce((a, b) => a + b, 0);
+                                    return data.labels.map((label, i) => {
+                                        const value = data.datasets[0].data[i];
+                                        const pct = total > 0 ? ((value / total) * 100).toFixed(0) : 0;
+                                        return {
+                                            text: `${label} (${value}, ${pct}%)`,
+                                            fillStyle: data.datasets[0].backgroundColor[i],
+                                            fontColor: '#eee',
+                                            hidden: false,
+                                            index: i
+                                        };
+                                    });
+                                }
+                            }
+                        }
+                    }
+                },
+                plugins: [uaLabelPlugin]
+            });
+        }
+
+        function updateUaChart(userAgents) {
+            const entries = Object.entries(userAgents || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+            uaChart.data.labels = entries.map(e => e[0].replace(/^\/|\/$|Satoshi:/g, '').slice(0, 16));
+            uaChart.data.datasets[0].data = entries.map(e => e[1]);
+            uaChart.update('none');
+        }
+
+        function formatBytes(bytes) {
+            if (bytes < 1024) return bytes + 'B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + 'KB';
+            return (bytes / 1048576).toFixed(1) + 'MB';
+        }
+
+        function formatRate(msgs, connectTime) {
+            if (!connectTime) return '-';
+            const secs = Math.max(1, Math.floor(Date.now() / 1000) - connectTime);
+            const rate = msgs / secs;
+            return rate < 1 ? rate.toFixed(2) : rate.toFixed(1);
+        }
+
         function esc(s) {
             const d = document.createElement('div');
             d.textContent = s;
             return d.innerHTML;
+        }
+
+        function formatTimeSince(timestamp) {
+            if (!timestamp) return '-';
+            const seconds = Math.floor(Date.now() / 1000) - timestamp;
+            if (seconds < 60) return seconds + 's';
+            if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+            return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
         }
 
         function updateUI(data) {
@@ -223,34 +493,62 @@
             document.getElementById('mempool-count').textContent = data.mempool.count;
             updateChart(data.mempool.count);
 
+            document.getElementById('blocks-seen').textContent = data.block.seen;
+            document.getElementById('time-since-block').textContent = formatTimeSince(data.block.time);
+            document.getElementById('block-hash').textContent = data.block.hash || 'Waiting for block...';
+
             const nodeList = document.getElementById('node-list');
             if (data.node_list.length === 0) {
                 nodeList.innerHTML = '<div class="empty">No nodes connected yet</div>';
             } else {
                 nodeList.innerHTML = data.node_list.map(node => `
                     <div class="node-item">
-                        <span class="node-addr">${esc(node.addr)}</span>
-                        <span>
-                            ${node.latency ? `<span class="node-latency">${esc(String(node.latency))}ms</span>` : ''}
-                            <span class="node-status ${esc(node.state)}">${esc(node.state)}</span>
-                        </span>
+                        <div class="node-header">
+                            <span class="node-addr">${esc(node.addr)}</span>
+                            <span>
+                                ${node.latency ? `<span class="node-latency">${esc(String(node.latency))}ms</span>` : ''}
+                                <span class="node-status ${esc(node.state)}">${esc(node.state)}</span>
+                            </span>
+                        </div>
+                        ${node.bytes_in !== undefined ? `<div class="node-bandwidth">
+                            <span class="in">↓${formatBytes(node.bytes_in)}</span>
+                            <span class="out">↑${formatBytes(node.bytes_out)}</span>
+                            <span>${formatRate(node.msgs_in, node.connect_time)} msg/s</span>
+                        </div>` : ''}
                     </div>
                 `).join('');
             }
 
+            lastTxs = data.recent_txs || [];
+            renderTxList();
+        }
+
+        function renderTxList() {
+            const filter = document.getElementById('tx-search').value.toLowerCase();
+            const filtered = lastTxs.filter(tx => !filter || tx.txid.toLowerCase().startsWith(filter));
             const txList = document.getElementById('tx-list');
-            if (data.recent_txs.length === 0) {
-                txList.innerHTML = '<div class="empty">No transactions yet</div>';
+            if (filtered.length === 0) {
+                txList.innerHTML = '<div class="empty">' + (filter ? 'No matching transactions' : 'No transactions yet') + '</div>';
             } else {
-                txList.innerHTML = data.recent_txs.slice(0, 20).map(tx => `
-                    <div class="tx-item">
+                txList.innerHTML = filtered.slice(0, 20).map(tx => {
+                    const delays = tx.delays || [];
+                    const propStr = delays.length > 0
+                        ? delays.slice(0, 5).map(d => d + 's').join(', ') + (delays.length > 5 ? '...' : '')
+                        : '-';
+                    const details = tx.hex
+                        ? `<div class="tx-details"><div class="tx-size">${esc(String(tx.size))} bytes</div><div class="tx-hex">${esc(tx.hex)}</div></div>`
+                        : '<div class="tx-details"><div class="tx-size">Raw data not available</div></div>';
+                    return `
+                    <div class="tx-item" onclick="this.classList.toggle('expanded')">
                         <div class="tx-id">${esc(tx.txid)}</div>
                         <div class="tx-meta">
-                            <span>${esc(String(tx.sources))} source(s)</span>
+                            <span>${esc(String(tx.sources))} peer(s)${tx.size ? ' · ' + tx.size + 'B' : ''}</span>
                             <span>${esc(new Date(tx.first_seen * 1000).toLocaleTimeString())}</span>
                         </div>
+                        <div class="tx-propagation">propagation: ${esc(propStr)}</div>
+                        ${details}
                     </div>
-                `).join('');
+                `}).join('');
             }
         }
 
@@ -274,6 +572,8 @@
                 try {
                     const data = JSON.parse(event.data);
                     updateUI(data);
+                    updateMap(data.node_list);
+                    updateUaChart(data.user_agents);
                 } catch (e) {
                     console.error('Parse error:', e);
                 }
@@ -281,7 +581,10 @@
         }
 
         initChart();
+        initUaChart();
+        initMap();
         connect();
+        document.getElementById('tx-search').addEventListener('input', renderTxList);
     </script>
 </body>
 </html>
