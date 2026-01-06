@@ -220,9 +220,6 @@ fn broadcastTransaction(allocator: std.mem.Allocator, args: BroadcastArgs) !void
 
     if (result.success_count > 0) {
         std.debug.print("\nTransaction broadcast to {d} peer(s)\n", .{result.success_count});
-        if (result.reject_count > 0) {
-            std.debug.print("Warning: {d} peer(s) rejected the transaction\n", .{result.reject_count});
-        }
     } else {
         std.debug.print("\nError: Broadcast failed to all peers\n", .{});
     }

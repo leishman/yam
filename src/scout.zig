@@ -232,18 +232,20 @@ fn readMessage(stream: std.net.Stream, allocator: std.mem.Allocator) !struct { h
 
     var payload: []u8 = &.{};
     if (header.length > 0) {
+        if (header.length > 4_000_000) return error.PayloadTooLarge;
+
         payload = try allocator.alloc(u8, header.length);
         errdefer allocator.free(payload);
 
         total_read = 0;
         while (total_read < header.length) {
             const bytes_read = try stream.read(payload[total_read..]);
-            if (bytes_read == 0) {
-                allocator.free(payload);
-                return error.ConnectionClosed;
-            }
+            if (bytes_read == 0) return error.ConnectionClosed;
             total_read += bytes_read;
         }
+
+        const calculated_checksum = yam.calculateChecksum(payload);
+        if (calculated_checksum != header.checksum) return error.InvalidChecksum;
     }
 
     return .{ .header = header, .payload = payload };

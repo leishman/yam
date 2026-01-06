@@ -111,6 +111,7 @@ pub const VersionPayload = struct {
 
         // User Agent: CompactSize length + string bytes
         const user_agent_len = try readVarInt(reader);
+        if (user_agent_len > 256) return error.UserAgentTooLong;
         const user_agent = try allocator.alloc(u8, user_agent_len);
         errdefer allocator.free(user_agent);
         _ = try reader.readAll(user_agent);
@@ -147,6 +148,7 @@ pub const InvType = enum(u32) {
     msg_witness_tx = 0x40000001, // Transaction with witness
     msg_witness_block = 0x40000002, // Block with witness
     msg_filtered_witness_block = 0x40000003, // Filtered block with witness
+    _,
 };
 
 // Inventory vector: type + hash
@@ -196,6 +198,7 @@ pub const InvMessage = struct {
     pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) !InvMessage {
         // Read count as CompactSize
         const count = try readVarInt(reader);
+        if (count > 50000) return error.TooManyInvVectors;
 
         // Allocate array for vectors
         const vectors = try allocator.alloc(InvVector, count);
@@ -253,6 +256,7 @@ pub const RejectMessage = struct {
     pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) !RejectMessage {
         // Read message type (var_str)
         const msg_len = try readVarInt(reader);
+        if (msg_len > 12) return error.RejectMessageTooLong;
         const message = try allocator.alloc(u8, msg_len);
         errdefer allocator.free(message);
         _ = try reader.readAll(message);
@@ -262,6 +266,7 @@ pub const RejectMessage = struct {
 
         // Read reason (var_str)
         const reason_len = try readVarInt(reader);
+        if (reason_len > 111) return error.RejectReasonTooLong;
         const reason = try allocator.alloc(u8, reason_len);
         errdefer allocator.free(reason);
         _ = try reader.readAll(reason);
@@ -340,6 +345,7 @@ pub const TxInput = struct {
 
         // Read script length (CompactSize)
         const script_len = try readVarInt(reader);
+        if (script_len > 10000) return error.ScriptTooLarge;
 
         // Read script
         const script = try allocator.alloc(u8, script_len);
@@ -391,6 +397,7 @@ pub const TxOutput = struct {
 
         // Read script length (CompactSize)
         const script_len = try readVarInt(reader);
+        if (script_len > 10000) return error.ScriptTooLarge;
 
         // Read script
         const script = try allocator.alloc(u8, script_len);
@@ -486,6 +493,7 @@ pub const Transaction = struct {
         if (is_segwit) {
             for (inputs) |*input| {
                 const witness_count = try readVarInt(reader);
+                if (witness_count > 500) return error.TooManyWitnessItems;
                 const witness = try allocator.alloc([]u8, witness_count);
                 var witness_initialized: usize = 0;
                 errdefer {
@@ -497,6 +505,7 @@ pub const Transaction = struct {
 
                 for (witness) |*item| {
                     const item_len = try readVarInt(reader);
+                    if (item_len > 520) return error.WitnessItemTooLarge;
                     item.* = try allocator.alloc(u8, item_len);
                     errdefer allocator.free(item.*);
                     _ = try reader.readAll(item.*);

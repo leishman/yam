@@ -25,27 +25,15 @@ pub const BroadcastOptions = struct {
 pub const BroadcastReport = struct {
     peer: yam.PeerInfo,
     success: bool,
-    rejected: bool,
-    reject_reason: ?[]u8,
     elapsed_ms: u64,
-
-    pub fn deinit(self: *BroadcastReport, allocator: std.mem.Allocator) void {
-        if (self.reject_reason) |reason| {
-            allocator.free(reason);
-        }
-    }
 };
 
 /// Result of broadcasting to multiple peers
 pub const BroadcastResult = struct {
     reports: []BroadcastReport,
     success_count: usize,
-    reject_count: usize,
 
     pub fn deinit(self: *BroadcastResult, allocator: std.mem.Allocator) void {
-        for (self.reports) |*report| {
-            report.deinit(allocator);
-        }
         allocator.free(self.reports);
     }
 };
@@ -219,17 +207,10 @@ pub const Relay = struct {
     /// Broadcast a transaction to connected peers
     /// If max_peers is set, stops after that many successful broadcasts
     pub fn broadcastTx(self: *Relay, tx_bytes: []const u8, options: BroadcastOptions) !BroadcastResult {
-        // Allocate reports for actual broadcasts (may be fewer than couriers if max_peers set)
         var reports_list: std.ArrayList(BroadcastReport) = .empty;
-        errdefer {
-            for (reports_list.items) |*report| {
-                report.deinit(self.allocator);
-            }
-            reports_list.deinit(self.allocator);
-        }
+        errdefer reports_list.deinit(self.allocator);
 
         var success_count: usize = 0;
-        var reject_count: usize = 0;
 
         // Initialize RNG for staggered timing
         var rng_seed: u64 = undefined;
@@ -257,12 +238,9 @@ pub const Relay = struct {
             var report = BroadcastReport{
                 .peer = courier.peer,
                 .success = false,
-                .rejected = false,
-                .reject_reason = null,
                 .elapsed_ms = 0,
             };
 
-            // Send transaction
             courier.sendTx(tx_bytes) catch |err| {
                 std.debug.print("Failed to send tx to peer: {s}\n", .{@errorName(err)});
                 report.elapsed_ms = @intCast(std.time.milliTimestamp() - start);
@@ -270,18 +248,8 @@ pub const Relay = struct {
                 continue;
             };
 
-            // Wait briefly for potential reject message
-            const reject_result = courier.waitForReject(1000) catch null;
-
-            if (reject_result) |reject| {
-                report.rejected = true;
-                report.reject_reason = reject;
-                reject_count += 1;
-            } else {
-                report.success = true;
-                success_count += 1;
-            }
-
+            report.success = true;
+            success_count += 1;
             report.elapsed_ms = @intCast(std.time.milliTimestamp() - start);
             try reports_list.append(self.allocator, report);
         }
@@ -289,7 +257,6 @@ pub const Relay = struct {
         return .{
             .reports = try reports_list.toOwnedSlice(self.allocator),
             .success_count = success_count,
-            .reject_count = reject_count,
         };
     }
 };
@@ -302,21 +269,12 @@ pub fn printBroadcastReport(reports: []const BroadcastReport, allocator: std.mem
 
     for (reports) |report| {
         const addr_str = report.peer.format();
-        const status = if (report.success)
-            "SUCCESS"
-        else if (report.rejected)
-            "REJECTED"
-        else
-            "FAILED";
+        const status = if (report.success) "SUCCESS" else "FAILED";
 
         std.debug.print("{s}: {s} ({d}ms)\n", .{
             std.mem.sliceTo(&addr_str, ' '),
             status,
             report.elapsed_ms,
         });
-
-        if (report.reject_reason) |reason| {
-            std.debug.print("  Reason: {s}\n", .{reason});
-        }
     }
 }
