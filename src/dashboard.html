@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yam - Bitcoin P2P Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #1a1a2e;
+            --card-bg: #16213e;
+            --text: #eee;
+            --accent: #e94560;
+            --success: #4ecca3;
+            --warning: #ffc107;
+            --error: #e94560;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { font-size: 2.5rem; }
+        .header .subtitle { color: #888; margin-top: 5px; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .card h2 {
+            font-size: 1.1rem;
+            color: #888;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+        .stat { text-align: center; }
+        .stat .value { font-size: 2rem; font-weight: bold; }
+        .stat .label { font-size: 0.8rem; color: #888; }
+        .stat.connected .value { color: var(--success); }
+        .stat.connecting .value { color: var(--warning); }
+        .stat.failed .value { color: var(--error); }
+        .node-list { max-height: 300px; overflow-y: auto; }
+        .node-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .node-item:last-child { border-bottom: none; }
+        .node-addr { font-family: monospace; font-size: 0.9rem; }
+        .node-status {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+        .node-status.connected { background: var(--success); color: #000; }
+        .node-status.connecting, .node-status.handshaking { background: var(--warning); color: #000; }
+        .node-status.failed { background: var(--error); }
+        .node-latency { color: #888; font-size: 0.85rem; margin-right: 8px; }
+        .tx-list { max-height: 300px; overflow-y: auto; }
+        .tx-item {
+            padding: 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .tx-item:last-child { border-bottom: none; }
+        .tx-id {
+            font-family: monospace;
+            font-size: 0.75rem;
+            word-break: break-all;
+            color: var(--accent);
+        }
+        .tx-meta {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 5px;
+            font-size: 0.75rem;
+            color: #888;
+        }
+        .chart-container { height: 200px; margin-top: 15px; }
+        .ws-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+        }
+        .ws-status.connected { background: var(--success); color: #000; }
+        .ws-status.disconnected { background: var(--error); }
+        .ws-status.connecting { background: var(--warning); color: #000; }
+        .empty { color: #666; text-align: center; padding: 20px; }
+    </style>
+</head>
+<body>
+    <div class="ws-status connecting" id="ws-status">Connecting...</div>
+    <div class="header">
+        <h1>Yam</h1>
+        <p class="subtitle">Bitcoin P2P Network Dashboard</p>
+    </div>
+    <div class="grid">
+        <div class="card">
+            <h2>Network Status</h2>
+            <div class="stat-grid">
+                <div class="stat">
+                    <div class="value" id="total-nodes">0</div>
+                    <div class="label">Known Nodes</div>
+                </div>
+                <div class="stat connected">
+                    <div class="value" id="connected-nodes">0</div>
+                    <div class="label">Connected</div>
+                </div>
+                <div class="stat connecting">
+                    <div class="value" id="connecting-nodes">0</div>
+                    <div class="label">Connecting</div>
+                </div>
+                <div class="stat failed">
+                    <div class="value" id="failed-nodes">0</div>
+                    <div class="label">Failed</div>
+                </div>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Mempool</h2>
+            <div class="stat">
+                <div class="value" id="mempool-count">0</div>
+                <div class="label">Transactions</div>
+            </div>
+            <div class="chart-container">
+                <canvas id="mempool-chart"></canvas>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Connected Nodes</h2>
+            <div class="node-list" id="node-list">
+                <div class="empty">No nodes connected yet</div>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Recent Transactions</h2>
+            <div class="tx-list" id="tx-list">
+                <div class="empty">No transactions yet</div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let ws = null;
+        let mempoolChart = null;
+        let mempoolHistory = [];
+        const maxHistory = 60;
+
+        function initChart() {
+            const ctx = document.getElementById('mempool-chart').getContext('2d');
+            mempoolChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Mempool Size',
+                        data: [],
+                        borderColor: '#e94560',
+                        backgroundColor: 'rgba(233, 69, 96, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: '#888' },
+                            grid: { color: 'rgba(255,255,255,0.1)' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateChart(count) {
+            const now = new Date();
+            mempoolHistory.push({ time: now, count: count });
+            if (mempoolHistory.length > maxHistory) mempoolHistory.shift();
+            mempoolChart.data.labels = mempoolHistory.map(h =>
+                h.time.toLocaleTimeString([], {minute: '2-digit', second: '2-digit'})
+            );
+            mempoolChart.data.datasets[0].data = mempoolHistory.map(h => h.count);
+            mempoolChart.update('none');
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function updateUI(data) {
+            document.getElementById('total-nodes').textContent = data.nodes.total;
+            document.getElementById('connected-nodes').textContent = data.nodes.connected;
+            document.getElementById('connecting-nodes').textContent = data.nodes.connecting;
+            document.getElementById('failed-nodes').textContent = data.nodes.failed;
+            document.getElementById('mempool-count').textContent = data.mempool.count;
+            updateChart(data.mempool.count);
+
+            const nodeList = document.getElementById('node-list');
+            if (data.node_list.length === 0) {
+                nodeList.innerHTML = '<div class="empty">No nodes connected yet</div>';
+            } else {
+                nodeList.innerHTML = data.node_list.map(node => `
+                    <div class="node-item">
+                        <span class="node-addr">${esc(node.addr)}</span>
+                        <span>
+                            ${node.latency ? `<span class="node-latency">${esc(String(node.latency))}ms</span>` : ''}
+                            <span class="node-status ${esc(node.state)}">${esc(node.state)}</span>
+                        </span>
+                    </div>
+                `).join('');
+            }
+
+            const txList = document.getElementById('tx-list');
+            if (data.recent_txs.length === 0) {
+                txList.innerHTML = '<div class="empty">No transactions yet</div>';
+            } else {
+                txList.innerHTML = data.recent_txs.slice(0, 20).map(tx => `
+                    <div class="tx-item">
+                        <div class="tx-id">${esc(tx.txid)}</div>
+                        <div class="tx-meta">
+                            <span>${esc(String(tx.sources))} source(s)</span>
+                            <span>${esc(new Date(tx.first_seen * 1000).toLocaleTimeString())}</span>
+                        </div>
+                    </div>
+                `).join('');
+            }
+        }
+
+        function setStatus(status) {
+            const el = document.getElementById('ws-status');
+            el.className = 'ws-status ' + status;
+            el.textContent = status === 'connected' ? 'Connected' :
+                             status === 'connecting' ? 'Connecting...' : 'Disconnected';
+        }
+
+        function connect() {
+            setStatus('connecting');
+            ws = new WebSocket('ws://' + window.location.host + '/ws');
+            ws.onopen = () => setStatus('connected');
+            ws.onclose = () => {
+                setStatus('disconnected');
+                setTimeout(connect, 2000);
+            };
+            ws.onerror = () => ws.close();
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateUI(data);
+                } catch (e) {
+                    console.error('Parse error:', e);
+                }
+            };
+        }
+
+        initChart();
+        connect();
+    </script>
+</body>
+</html>

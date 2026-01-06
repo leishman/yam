@@ -1235,7 +1235,7 @@ pub const Explorer = struct {
     // Manager Thread
     // =========================================================================
 
-    fn managerThread(self: *Explorer) void {
+    pub fn managerThread(self: *Explorer) void {
         while (!self.should_stop.load(.acquire)) {
             self.processPendingCommands();
             self.pollConnections();

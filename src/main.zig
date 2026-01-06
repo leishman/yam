@@ -4,10 +4,12 @@ const scout = @import("scout.zig");
 const relay = @import("relay.zig");
 const Relay = relay.Relay;
 const Explorer = @import("explorer.zig").Explorer;
+const Dashboard = @import("dashboard.zig").Dashboard;
 
 const Command = enum {
     broadcast,
     explore,
+    dashboard,
     help,
 };
 
@@ -47,6 +49,8 @@ pub fn main() !void {
         .broadcast
     else if (std.mem.eql(u8, cmd_str, "explore"))
         .explore
+    else if (std.mem.eql(u8, cmd_str, "dashboard") or std.mem.eql(u8, cmd_str, "--dashboard"))
+        .dashboard
     else if (std.mem.eql(u8, cmd_str, "--help") or std.mem.eql(u8, cmd_str, "-h") or std.mem.eql(u8, cmd_str, "help"))
         .help
     else {
@@ -67,6 +71,11 @@ pub fn main() !void {
             var explorer = try Explorer.init(allocator);
             defer explorer.deinit();
             try explorer.run();
+        },
+        .dashboard => {
+            var dashboard = try Dashboard.init(allocator);
+            defer dashboard.deinit();
+            try dashboard.run();
         },
         .help => printUsage(),
     }
@@ -106,6 +115,7 @@ fn printUsage() void {
         \\USAGE:
         \\  yam broadcast <tx_hex> [options]    Broadcast a transaction
         \\  yam explore                         Interactive network explorer (default)
+        \\  yam dashboard                       Web dashboard on http://localhost:8080
         \\  yam help                            Show this help
         \\
         \\Run 'yam broadcast --help' for broadcast options.
