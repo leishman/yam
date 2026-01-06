@@ -12,10 +12,21 @@
             --bg: #1a1a2e;
             --card-bg: #16213e;
             --text: #eee;
+            --text-muted: #888;
             --accent: #e94560;
             --success: #4ecca3;
             --warning: #ffc107;
             --error: #e94560;
+            --border: rgba(255,255,255,0.1);
+            --input-bg: rgba(0,0,0,0.3);
+        }
+        [data-theme="light"] {
+            --bg: #f5f5f5;
+            --card-bg: #ffffff;
+            --text: #222;
+            --text-muted: #666;
+            --border: rgba(0,0,0,0.1);
+            --input-bg: rgba(0,0,0,0.05);
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -25,9 +36,34 @@
             min-height: 100vh;
             padding: 20px;
         }
-        .header { text-align: center; margin-bottom: 30px; }
+        .header { text-align: center; margin-bottom: 30px; position: relative; }
         .header h1 { font-size: 2.5rem; }
-        .header .subtitle { color: #888; margin-top: 5px; }
+        .header .subtitle { color: var(--text-muted); margin-top: 5px; }
+        .header-controls { margin-top: 15px; display: flex; justify-content: center; gap: 10px; }
+        .header-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--card-bg);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+        .header-btn:hover { border-color: var(--accent); }
+        .block-badge {
+            display: none;
+            position: fixed;
+            top: 50px;
+            right: 10px;
+            padding: 10px 15px;
+            background: var(--success);
+            color: #000;
+            border-radius: 8px;
+            font-weight: bold;
+            animation: fadeIn 0.3s;
+        }
+        .block-badge.show { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -42,7 +78,7 @@
         }
         .card h2 {
             font-size: 1.1rem;
-            color: #888;
+            color: var(--text-muted);
             margin-bottom: 15px;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -54,14 +90,14 @@
         }
         .stat { text-align: center; }
         .stat .value { font-size: 2rem; font-weight: bold; }
-        .stat .label { font-size: 0.8rem; color: #888; }
+        .stat .label { font-size: 0.8rem; color: var(--text-muted); }
         .stat.connected .value { color: var(--success); }
         .stat.connecting .value { color: var(--warning); }
         .stat.failed .value { color: var(--error); }
         .node-list { max-height: 400px; overflow-y: auto; }
         .node-item {
             padding: 10px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            border-bottom: 1px solid var(--border);
         }
         .node-item:last-child { border-bottom: none; }
         .node-header {
@@ -79,10 +115,10 @@
         .node-status.connected { background: var(--success); color: #000; }
         .node-status.connecting, .node-status.handshaking { background: var(--warning); color: #000; }
         .node-status.failed { background: var(--error); }
-        .node-latency { color: #888; font-size: 0.85rem; margin-right: 8px; }
+        .node-latency { color: var(--text-muted); font-size: 0.85rem; margin-right: 8px; }
         .node-bandwidth {
             font-size: 0.7rem;
-            color: #666;
+            color: var(--text-muted);
             margin-top: 4px;
             font-family: monospace;
         }
@@ -92,7 +128,7 @@
         .tx-list { max-height: 300px; overflow-y: auto; }
         .tx-item {
             padding: 10px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            border-bottom: 1px solid var(--border);
             cursor: pointer;
         }
         .tx-item:hover { background: rgba(255,255,255,0.03); }
@@ -115,7 +151,7 @@
             font-family: monospace;
             font-size: 0.65rem;
             word-break: break-all;
-            color: #888;
+            color: var(--text-muted);
             max-height: 100px;
             overflow-y: auto;
         }
@@ -125,7 +161,7 @@
             justify-content: space-between;
             margin-top: 5px;
             font-size: 0.75rem;
-            color: #888;
+            color: var(--text-muted);
         }
         .tx-propagation {
             font-size: 0.7rem;
@@ -137,14 +173,14 @@
             width: 100%;
             padding: 8px 12px;
             margin-bottom: 10px;
-            background: rgba(0,0,0,0.3);
-            border: 1px solid rgba(255,255,255,0.1);
+            background: var(--input-bg);
+            border: 1px solid var(--border);
             border-radius: 6px;
             color: var(--text);
             font-family: monospace;
             font-size: 0.85rem;
         }
-        .tx-search::placeholder { color: #666; }
+        .tx-search::placeholder { color: var(--text-muted); }
         .tx-search:focus { outline: none; border-color: var(--accent); }
         .chart-container { height: 200px; margin-top: 15px; }
         .ws-status {
@@ -158,15 +194,15 @@
         .ws-status.connected { background: var(--success); color: #000; }
         .ws-status.disconnected { background: var(--error); }
         .ws-status.connecting { background: var(--warning); color: #000; }
-        .empty { color: #666; text-align: center; padding: 20px; }
+        .empty { color: var(--text-muted); text-align: center; padding: 20px; }
         .block-hash {
             font-family: monospace;
             font-size: 0.7rem;
             word-break: break-all;
-            color: #888;
+            color: var(--text-muted);
             margin-top: 15px;
             padding: 10px;
-            background: rgba(0,0,0,0.2);
+            background: var(--input-bg);
             border-radius: 6px;
         }
         .card.map-card { grid-column: 1 / -1; }
@@ -178,7 +214,14 @@
     <div class="header">
         <h1>Yam</h1>
         <p class="subtitle">Bitcoin P2P Network Dashboard</p>
+        <div class="header-controls">
+            <button class="header-btn" id="theme-btn">Light</button>
+            <button class="header-btn" onclick="exportNodes('json')">Nodes JSON</button>
+            <button class="header-btn" onclick="exportNodes('csv')">Nodes CSV</button>
+            <button class="header-btn" onclick="exportTxs('json')">Txs JSON</button>
+        </div>
     </div>
+    <div class="block-badge" id="block-badge">New Block!</div>
     <div class="grid">
         <div class="card">
             <h2>Network Status</h2>
@@ -226,16 +269,28 @@
             <div class="block-hash" id="block-hash">Waiting for block...</div>
         </div>
         <div class="card">
-            <h2>User Agents</h2>
-            <div style="font-size:0.75rem;color:#888;margin-bottom:8px">Format: Agent (count, percentage)</div>
+            <h2>Block Time History</h2>
             <div class="chart-container">
-                <canvas id="ua-chart"></canvas>
+                <canvas id="blocktime-chart"></canvas>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Transaction Sizes</h2>
+            <div class="chart-container">
+                <canvas id="txsize-chart"></canvas>
             </div>
         </div>
         <div class="card">
             <h2>Connected Nodes</h2>
             <div class="node-list" id="node-list">
                 <div class="empty">No nodes connected yet</div>
+            </div>
+        </div>
+        <div class="card">
+            <h2>User Agents</h2>
+            <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">Format: Agent (count, percentage)</div>
+            <div class="chart-container">
+                <canvas id="ua-chart"></canvas>
             </div>
         </div>
         <div class="card">
@@ -254,6 +309,8 @@
         let ws = null;
         let mempoolChart = null;
         let uaChart = null;
+        let blocktimeChart = null;
+        let txsizeChart = null;
         let mempoolHistory = [];
         const maxHistory = 60;
         let peerMap = null;
@@ -264,6 +321,125 @@
         let lastTxs = [];
         const geoQueue = [];
         let geoProcessing = false;
+        let lastData = null;
+        let lastBlockHash = null;
+        let blockTimeHistory = [];
+        const maxBlockHistory = 20;
+
+        function initTheme() {
+            const saved = localStorage.getItem('theme') || 'dark';
+            if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+            updateThemeBtn();
+            setTimeout(updateChartColors, 100);
+        }
+
+        function toggleTheme() {
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            if (isLight) {
+                document.documentElement.removeAttribute('data-theme');
+                localStorage.setItem('theme', 'dark');
+            } else {
+                document.documentElement.setAttribute('data-theme', 'light');
+                localStorage.setItem('theme', 'light');
+            }
+            updateThemeBtn();
+            updateChartColors();
+        }
+
+        function getChartColors() {
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            return {
+                text: isLight ? '#666' : '#888',
+                grid: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)',
+                legend: isLight ? '#333' : '#eee'
+            };
+        }
+
+        function updateChartColors() {
+            const c = getChartColors();
+            if (mempoolChart) {
+                mempoolChart.options.scales.y.ticks.color = c.text;
+                mempoolChart.options.scales.y.grid.color = c.grid;
+                mempoolChart.update('none');
+            }
+            if (blocktimeChart) {
+                blocktimeChart.options.scales.y.ticks.color = c.text;
+                blocktimeChart.options.scales.y.title.color = c.text;
+                blocktimeChart.options.scales.y.grid.color = c.grid;
+                blocktimeChart.options.scales.x.ticks.color = c.text;
+                blocktimeChart.options.scales.x.title.color = c.text;
+                blocktimeChart.update('none');
+            }
+            if (txsizeChart) {
+                txsizeChart.options.scales.y.ticks.color = c.text;
+                txsizeChart.options.scales.y.title.color = c.text;
+                txsizeChart.options.scales.y.grid.color = c.grid;
+                txsizeChart.options.scales.x.ticks.color = c.text;
+                txsizeChart.options.scales.x.title.color = c.text;
+                txsizeChart.update('none');
+            }
+            if (uaChart) {
+                uaChart.options.plugins.legend.labels.color = c.legend;
+                uaChart.update('none');
+            }
+        }
+
+        function updateThemeBtn() {
+            const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+            document.getElementById('theme-btn').textContent = isLight ? 'Dark' : 'Light';
+        }
+
+        function exportNodes(format) {
+            if (!lastData || !lastData.node_list) return;
+            const nodes = lastData.node_list;
+            if (format === 'json') {
+                downloadFile('nodes.json', JSON.stringify(nodes, null, 2), 'application/json');
+            } else {
+                const csv = 'index,addr,state,latency,bytes_in,bytes_out,msgs_in,msgs_out\n' +
+                    nodes.map(n => `${n.index},${n.addr},${n.state},${n.latency||''},${n.bytes_in||0},${n.bytes_out||0},${n.msgs_in||0},${n.msgs_out||0}`).join('\n');
+                downloadFile('nodes.csv', csv, 'text/csv');
+            }
+        }
+
+        function exportTxs(format) {
+            if (!lastData || !lastData.recent_txs) return;
+            const txs = lastData.recent_txs;
+            if (format === 'json') {
+                downloadFile('transactions.json', JSON.stringify(txs, null, 2), 'application/json');
+            }
+        }
+
+        function downloadFile(filename, content, type) {
+            const blob = new Blob([content], { type });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function showBlockNotification() {
+            const badge = document.getElementById('block-badge');
+            badge.classList.add('show');
+            playNotificationSound();
+            setTimeout(() => badge.classList.remove('show'), 3000);
+        }
+
+        function playNotificationSound() {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = 800;
+            gain.gain.value = 0.1;
+            osc.start();
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+            osc.stop(ctx.currentTime + 0.2);
+        }
+
+        document.getElementById('theme-btn').addEventListener('click', toggleTheme);
 
         function initMap() {
             peerMap = L.map('peer-map', { attributionControl: false }).setView([20, 0], 2);
@@ -437,7 +613,7 @@
                                         return {
                                             text: `${label} (${value}, ${pct}%)`,
                                             fillStyle: data.datasets[0].backgroundColor[i],
-                                            fontColor: '#eee',
+                                            fontColor: getChartColors().legend,
                                             hidden: false,
                                             index: i
                                         };
@@ -456,6 +632,76 @@
             uaChart.data.labels = entries.map(e => e[0].replace(/^\/|\/$|Satoshi:/g, '').slice(0, 16));
             uaChart.data.datasets[0].data = entries.map(e => e[1]);
             uaChart.update('none');
+        }
+
+        function initBlocktimeChart() {
+            const ctx = document.getElementById('blocktime-chart').getContext('2d');
+            blocktimeChart = new Chart(ctx, {
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: 'Minutes', data: [], backgroundColor: '#4ecca3' }] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, title: { display: true, text: 'Minutes', color: '#888' }, ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        x: { title: { display: true, text: 'Block #', color: '#888' }, ticks: { color: '#888' }, grid: { display: false } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        function updateBlocktimeChart(blockData) {
+            if (!blockData || !blockData.time) return;
+            const now = Date.now();
+            if (lastBlockHash && blockData.hash !== lastBlockHash) {
+                const lastEntry = blockTimeHistory[blockTimeHistory.length - 1];
+                if (lastEntry) {
+                    const interval = (now - lastEntry.arrived) / 60000;
+                    blockTimeHistory.push({ block: blockData.seen, interval, arrived: now });
+                } else {
+                    blockTimeHistory.push({ block: blockData.seen, interval: 0, arrived: now });
+                }
+                if (blockTimeHistory.length > maxBlockHistory) blockTimeHistory.shift();
+                blocktimeChart.data.labels = blockTimeHistory.map(b => b.block);
+                blocktimeChart.data.datasets[0].data = blockTimeHistory.map(b => b.interval.toFixed(1));
+                blocktimeChart.update('none');
+            } else if (blockTimeHistory.length === 0 && blockData.hash) {
+                blockTimeHistory.push({ block: blockData.seen, interval: 0, arrived: now });
+            }
+        }
+
+        function initTxsizeChart() {
+            const ctx = document.getElementById('txsize-chart').getContext('2d');
+            txsizeChart = new Chart(ctx, {
+                type: 'bar',
+                data: { labels: ['<250', '250-500', '500-1K', '1K-2K', '2K-5K', '>5K'], datasets: [{ label: 'Transactions', data: [0,0,0,0,0,0], backgroundColor: '#e94560' }] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, title: { display: true, text: 'Count', color: '#888' }, ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        x: { title: { display: true, text: 'Size (bytes)', color: '#888' }, ticks: { color: '#888' }, grid: { display: false } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        function updateTxsizeChart(txs) {
+            if (!txs || txs.length === 0) return;
+            const buckets = [0, 0, 0, 0, 0, 0];
+            for (const tx of txs) {
+                if (!tx.size) continue;
+                if (tx.size < 250) buckets[0]++;
+                else if (tx.size < 500) buckets[1]++;
+                else if (tx.size < 1000) buckets[2]++;
+                else if (tx.size < 2000) buckets[3]++;
+                else if (tx.size < 5000) buckets[4]++;
+                else buckets[5]++;
+            }
+            txsizeChart.data.datasets[0].data = buckets;
+            txsizeChart.update('none');
         }
 
         function formatBytes(bytes) {
@@ -571,7 +817,14 @@
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
+                    lastData = data;
+                    updateBlocktimeChart(data.block);
+                    if (data.block && data.block.hash && data.block.hash !== lastBlockHash) {
+                        if (lastBlockHash !== null) showBlockNotification();
+                        lastBlockHash = data.block.hash;
+                    }
                     updateUI(data);
+                    updateTxsizeChart(data.recent_txs);
                     updateMap(data.node_list);
                     updateUaChart(data.user_agents);
                 } catch (e) {
@@ -580,8 +833,11 @@
             };
         }
 
+        initTheme();
         initChart();
         initUaChart();
+        initBlocktimeChart();
+        initTxsizeChart();
         initMap();
         connect();
         document.getElementById('tx-search').addEventListener('input', renderTxList);
