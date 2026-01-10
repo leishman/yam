@@ -42,6 +42,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    const httpz = b.dependency("httpz", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Executable - uses direct file imports for simplicity
     const exe = b.addExecutable(.{
         .name = "yam",
@@ -53,6 +58,8 @@ pub fn build(b: *std.Build) void {
             .link_libc = builtin.os.tag == .windows,
         }),
     });
+
+    exe.root_module.addImport("httpz", httpz.module("httpz"));
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

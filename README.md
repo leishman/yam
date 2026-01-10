@@ -85,6 +85,14 @@ Status:
 > q                     # quit
 ```
 
+### Dashboard Mode
+
+```
+./zig-out/bin/yam dashboard
+```
+
+Starts a web dashboard at `http://localhost:8080` for monitoring network activity.
+
 ### Broadcast Mode (still WIP)
 
 ```

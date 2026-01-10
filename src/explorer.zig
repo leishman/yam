@@ -34,14 +34,66 @@ pub const Connection = struct {
 pub const NodeMetadata = struct {
     user_agent: ?[]const u8 = null,
     services: u64 = 0,
+    start_height: ?i32 = null,
     ever_connected: bool = false,
     latency_ms: ?u64 = null,
     pending_ping_time: ?i64 = null,
     pending_ping_nonce: ?u64 = null,
-    // Future: protocol_version, start_height, etc.
+    bytes_in: u64 = 0,
+    bytes_out: u64 = 0,
+    msgs_in: u64 = 0,
+    msgs_out: u64 = 0,
+    connect_time: ?i64 = null,
+    connect_start_time: ?i64 = null,
+    handshake_time_ms: ?u64 = null,
+    reconnect_count: u32 = 0,
 
     pub fn canServeWitnesses(self: NodeMetadata) bool {
         return (self.services & yam.ServiceFlags.NODE_WITNESS) != 0;
+    }
+
+    pub fn qualityScore(self: NodeMetadata) ?u8 {
+        if (!self.ever_connected) return null;
+        var score: i32 = 0;
+
+        if (self.latency_ms) |lat| {
+            if (lat < 50) score += 30
+            else if (lat < 100) score += 25
+            else if (lat < 200) score += 20
+            else if (lat < 500) score += 10
+            else score += 5;
+        }
+
+        if (self.connect_time) |ct| {
+            const now = std.time.timestamp();
+            const uptime_mins = @divFloor(now - ct, 60);
+            if (uptime_mins > 60) score += 25
+            else if (uptime_mins > 30) score += 20
+            else if (uptime_mins > 10) score += 15
+            else if (uptime_mins > 5) score += 10
+            else score += 5;
+        }
+
+        if (self.handshake_time_ms) |hs| {
+            if (hs < 500) score += 20
+            else if (hs < 1000) score += 15
+            else if (hs < 2000) score += 10
+            else score += 5;
+        }
+
+        if (self.connect_time) |ct| {
+            const now = std.time.timestamp();
+            const uptime_secs = @max(1, now - ct);
+            const msg_rate = @divFloor(@as(i64, @intCast(self.msgs_in)), uptime_secs);
+            if (msg_rate >= 1 and msg_rate <= 50) score += 25
+            else if (msg_rate > 0) score += 15
+            else score += 5;
+        }
+
+        const reconnect_penalty: i32 = @min(30, @as(i32, @intCast(self.reconnect_count)) * 10);
+        score = @max(0, score - reconnect_penalty);
+
+        return @intCast(@min(100, score));
     }
 
     pub fn deinit(self: *NodeMetadata, allocator: std.mem.Allocator) void {
@@ -57,12 +109,53 @@ pub const TxAnnouncement = struct {
     timestamp: i64,
 };
 
+pub const TxType = enum(u8) {
+    unknown,
+    p2pkh,
+    p2sh,
+    p2wpkh,
+    p2wsh,
+    p2tr,
+    mixed,
+
+    pub fn toString(self: TxType) []const u8 {
+        return switch (self) {
+            .unknown => "Unknown",
+            .p2pkh => "P2PKH",
+            .p2sh => "P2SH",
+            .p2wpkh => "P2WPKH",
+            .p2wsh => "P2WSH",
+            .p2tr => "P2TR",
+            .mixed => "Mixed",
+        };
+    }
+};
+
+pub const SpamFlags = packed struct {
+    has_dust: bool = false,
+    has_op_return: bool = false,
+    has_inscription: bool = false,
+    low_fee: bool = false,
+    _padding: u4 = 0,
+};
+
 /// Mempool entry tracking a transaction and its announcements
 pub const MempoolEntry = struct {
     txid: [32]u8,
-    tx_data: ?[]u8, // raw transaction bytes, null until we receive full tx
+    tx_data: ?[]u8,
     first_seen: i64,
     announcements: std.ArrayList(TxAnnouncement),
+    fee_rate: ?f32 = null,
+    vsize: ?u32 = null,
+    output_total: ?u64 = null,
+    version: ?i32 = null,
+    input_count: ?u32 = null,
+    output_count: ?u32 = null,
+    locktime: ?u32 = null,
+    tx_type: TxType = .unknown,
+    spam_score: u8 = 0,
+    spam_flags: SpamFlags = .{},
+    witness_size: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, txid: [32]u8, first_node: usize) MempoolEntry {
         var entry = MempoolEntry{
@@ -70,6 +163,17 @@ pub const MempoolEntry = struct {
             .tx_data = null,
             .first_seen = std.time.timestamp(),
             .announcements = std.ArrayList(TxAnnouncement).empty,
+            .fee_rate = null,
+            .vsize = null,
+            .output_total = null,
+            .version = null,
+            .input_count = null,
+            .output_count = null,
+            .locktime = null,
+            .tx_type = .unknown,
+            .spam_score = 0,
+            .spam_flags = .{},
+            .witness_size = 0,
         };
         entry.announcements.append(allocator, .{
             .node_index = first_node,
@@ -114,9 +218,17 @@ pub const Explorer = struct {
     unconnected_nodes: std.AutoHashMap(usize, void), // node indices not yet connected
     node_metadata: std.AutoHashMap(usize, NodeMetadata), // discovered info about nodes
     mempool: std.StringHashMap(MempoolEntry), // txid hex -> entry
+    mempool_utxos: std.StringHashMap(u64), // "txid:vout" -> value in satoshis
     seen_nodes: std.StringHashMap(void),
     edges: std.ArrayList(Edge),
     stdout: std.fs.File,
+
+    last_block_hash: ?[64]u8,
+    last_block_time: ?i64,
+    blocks_seen: usize,
+
+    session_start: i64,
+    msg_type_counts: std.StringHashMap(u64),
 
     manager_thread: ?std.Thread,
     pending_commands: std.ArrayList(ManagerCommand),
@@ -133,9 +245,15 @@ pub const Explorer = struct {
             .unconnected_nodes = std.AutoHashMap(usize, void).init(allocator),
             .node_metadata = std.AutoHashMap(usize, NodeMetadata).init(allocator),
             .mempool = std.StringHashMap(MempoolEntry).init(allocator),
+            .mempool_utxos = std.StringHashMap(u64).init(allocator),
             .seen_nodes = std.StringHashMap(void).init(allocator),
             .edges = std.ArrayList(Edge).empty,
             .stdout = std.fs.File.stdout(),
+            .last_block_hash = null,
+            .last_block_time = null,
+            .blocks_seen = 0,
+            .session_start = std.time.timestamp(),
+            .msg_type_counts = std.StringHashMap(u64).init(allocator),
             .manager_thread = null,
             .pending_commands = std.ArrayList(ManagerCommand).empty,
             .mutex = .{},
@@ -173,11 +291,22 @@ pub const Explorer = struct {
         }
         self.mempool.deinit();
 
+        var utxo_iter = self.mempool_utxos.keyIterator();
+        while (utxo_iter.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.mempool_utxos.deinit();
+
         var seen_iter = self.seen_nodes.keyIterator();
         while (seen_iter.next()) |key| {
             self.allocator.free(key.*);
         }
         self.seen_nodes.deinit();
+        var msg_iter = self.msg_type_counts.keyIterator();
+        while (msg_iter.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.msg_type_counts.deinit();
 
         for (self.edges.items) |edge| {
             self.allocator.free(edge.source);
@@ -1235,7 +1364,7 @@ pub const Explorer = struct {
     // Manager Thread
     // =========================================================================
 
-    fn managerThread(self: *Explorer) void {
+    pub fn managerThread(self: *Explorer) void {
         while (!self.should_stop.load(.acquire)) {
             self.processPendingCommands();
             self.pollConnections();
@@ -1292,6 +1421,13 @@ pub const Explorer = struct {
             .handshake_state = .{},
         };
 
+        const entry = self.node_metadata.getOrPut(node_index) catch null;
+        if (entry) |e| {
+            if (!e.found_existing) e.value_ptr.* = .{};
+            if (e.value_ptr.ever_connected) e.value_ptr.reconnect_count += 1;
+            e.value_ptr.connect_start_time = std.time.milliTimestamp();
+        }
+
         self.connections.put(node_index, conn) catch {
             self.allocator.destroy(conn);
             std.posix.close(socket);
@@ -1316,16 +1452,18 @@ pub const Explorer = struct {
         const checksum = yam.calculateChecksum(&.{});
         const header = yam.MessageHeader.new("getaddr", 0, checksum);
         _ = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch {};
+        if (self.node_metadata.getPtr(node_index)) |meta| {
+            meta.bytes_out += 24;
+            meta.msgs_out += 1;
+        }
     }
 
     fn sendPing(self: *Explorer, node_index: usize) void {
         const conn = self.connections.get(node_index) orelse return;
 
-        // Generate random nonce
         var nonce: u64 = undefined;
         std.posix.getrandom(std.mem.asBytes(&nonce)) catch return;
 
-        // Store pending ping info in metadata
         const entry = self.node_metadata.getOrPut(node_index) catch return;
         if (!entry.found_existing) {
             entry.value_ptr.* = .{};
@@ -1333,12 +1471,13 @@ pub const Explorer = struct {
         entry.value_ptr.pending_ping_nonce = nonce;
         entry.value_ptr.pending_ping_time = std.time.milliTimestamp();
 
-        // Send ping with nonce as payload
         const payload = std.mem.asBytes(&nonce);
         const checksum = yam.calculateChecksum(payload);
         const header = yam.MessageHeader.new("ping", @intCast(payload.len), checksum);
         _ = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch return;
         _ = platform.socketWrite(conn.socket, payload) catch return;
+        entry.value_ptr.bytes_out += 24 + payload.len;
+        entry.value_ptr.msgs_out += 1;
     }
 
     fn pollConnections(self: *Explorer) void {
@@ -1499,6 +1638,18 @@ pub const Explorer = struct {
 
         self.mutex.lock();
         const conn2 = self.connections.get(node_index);
+        if (self.node_metadata.getPtr(node_index)) |meta| {
+            meta.bytes_in += header_read + payload_read;
+            meta.msgs_in += 1;
+        }
+        if (self.msg_type_counts.getPtr(cmd)) |count| {
+            count.* += 1;
+        } else {
+            const key = self.allocator.dupe(u8, cmd) catch return;
+            self.msg_type_counts.put(key, 1) catch {
+                self.allocator.free(key);
+            };
+        }
         self.mutex.unlock();
 
         if (conn2 == null) return;
@@ -1535,28 +1686,25 @@ pub const Explorer = struct {
         if (std.mem.eql(u8, cmd, "version")) {
             conn.handshake_state.received_version = true;
 
-            // Parse version message to extract user_agent
             var fbs = std.io.fixedBufferStream(payload);
             if (yam.VersionPayload.deserialize(fbs.reader(), self.allocator)) |version_msg| {
-                // Store user_agent in node_metadata
                 const ua_copy = self.allocator.dupe(u8, version_msg.user_agent) catch null;
                 self.allocator.free(version_msg.user_agent);
 
-                if (ua_copy) |ua| {
-                    const entry = self.node_metadata.getOrPut(node_index) catch null;
-                    if (entry) |e| {
-                        if (e.found_existing) {
-                            if (e.value_ptr.user_agent) |old_ua| {
-                                self.allocator.free(old_ua);
-                            }
-                        } else {
-                            e.value_ptr.* = .{};
+                const entry = self.node_metadata.getOrPut(node_index) catch null;
+                if (entry) |e| {
+                    if (e.found_existing) {
+                        if (e.value_ptr.user_agent) |old_ua| {
+                            self.allocator.free(old_ua);
                         }
-                        e.value_ptr.user_agent = ua;
-                        e.value_ptr.services = version_msg.services;
                     } else {
-                        self.allocator.free(ua);
+                        e.value_ptr.* = .{};
                     }
+                    e.value_ptr.user_agent = ua_copy;
+                    e.value_ptr.services = version_msg.services;
+                    e.value_ptr.start_height = version_msg.start_height;
+                } else if (ua_copy) |ua| {
+                    self.allocator.free(ua);
                 }
             } else |_| {}
 
@@ -1573,13 +1721,17 @@ pub const Explorer = struct {
         if (conn.handshake_state.received_version and conn.handshake_state.received_verack) {
             conn.state = .connected;
 
-            // Mark this node as having been connected at some point
             const entry = self.node_metadata.getOrPut(node_index) catch null;
             if (entry) |e| {
                 if (!e.found_existing) {
                     e.value_ptr.* = .{};
                 }
                 e.value_ptr.ever_connected = true;
+                e.value_ptr.connect_time = std.time.timestamp();
+                if (e.value_ptr.connect_start_time) |start| {
+                    const now = std.time.milliTimestamp();
+                    e.value_ptr.handshake_time_ms = @intCast(@max(0, now - start));
+                }
             }
         }
     }
@@ -1701,8 +1853,14 @@ pub const Explorer = struct {
         defer tx_invs.deinit(self.allocator);
 
         for (inv_msg.vectors) |inv| {
-            // Only care about transactions (type 1)
-            if (inv.type == .msg_tx or inv.type == .msg_witness_tx) {
+            if (inv.type == .msg_block or inv.type == .msg_witness_block) {
+                const block_hash = inv.hashHex();
+                if (self.last_block_hash == null or !std.mem.eql(u8, &self.last_block_hash.?, &block_hash)) {
+                    self.last_block_hash = block_hash;
+                    self.last_block_time = std.time.timestamp();
+                    self.blocks_seen += 1;
+                }
+            } else if (inv.type == .msg_tx or inv.type == .msg_witness_tx) {
                 tx_count += 1;
                 const txid_hex = inv.hashHex();
 
@@ -1730,9 +1888,8 @@ pub const Explorer = struct {
             }
         }
 
-        // Send getdata for new transactions
         if (tx_invs.items.len > 0) {
-            self.sendGetdata(socket, tx_invs.items);
+            self.sendGetdata(node_index, socket, tx_invs.items);
         }
 
         if (tx_count > 0 and conn.streaming) {
@@ -1748,18 +1905,13 @@ pub const Explorer = struct {
         }
     }
 
-    fn sendGetdata(self: *Explorer, socket: std.posix.socket_t, invs: []const yam.InvVector) void {
-        _ = self;
-
-        // Build getdata message
+    fn sendGetdata(self: *Explorer, node_index: usize, socket: std.posix.socket_t, invs: []const yam.InvVector) void {
         var payload_buf: [65536]u8 = undefined;
         var payload_fbs = std.io.fixedBufferStream(&payload_buf);
         const payload_writer = payload_fbs.writer();
 
-        // Write count as varint
         yam.writeVarInt(payload_writer, invs.len) catch return;
 
-        // Write each inv vector
         for (invs) |inv| {
             inv.serialize(payload_writer) catch return;
         }
@@ -1770,23 +1922,159 @@ pub const Explorer = struct {
 
         _ = platform.socketWrite(socket, std.mem.asBytes(&header)) catch return;
         _ = platform.socketWrite(socket, payload) catch return;
+        if (self.node_metadata.getPtr(node_index)) |meta| {
+            meta.bytes_out += 24 + payload.len;
+            meta.msgs_out += 1;
+        }
     }
 
     fn handleTxMessage(self: *Explorer, payload: []const u8) void {
-        if (payload.len < 10) return; // Minimum tx size
+        if (payload.len < 10) return;
 
-        // Parse transaction to get txid
         var fbs = std.io.fixedBufferStream(payload);
         const tx = yam.Transaction.deserialize(fbs.reader(), self.allocator) catch return;
         defer tx.deinit(self.allocator);
 
         const txid_hex = tx.txidHex(self.allocator) catch return;
 
-        // Update mempool entry with tx data
         if (self.mempool.getPtr(&txid_hex)) |entry| {
             if (entry.tx_data == null) {
                 entry.tx_data = self.allocator.dupe(u8, payload) catch null;
             }
+            if (entry.vsize == null) {
+                const vsize = self.calculateVsize(&tx, payload.len);
+                entry.vsize = vsize;
+                entry.version = tx.version;
+                entry.input_count = @intCast(tx.inputs.len);
+                entry.output_count = @intCast(tx.outputs.len);
+                entry.locktime = tx.locktime;
+                entry.tx_type = detectTxType(tx.outputs);
+
+                var output_total: u64 = 0;
+                for (tx.outputs, 0..) |output, vout| {
+                    output_total += output.value;
+                    var key_buf: [80]u8 = undefined;
+                    const key = std.fmt.bufPrint(&key_buf, "{s}:{d}", .{ txid_hex, vout }) catch continue;
+                    const key_owned = self.allocator.dupe(u8, key) catch continue;
+                    self.mempool_utxos.put(key_owned, output.value) catch {
+                        self.allocator.free(key_owned);
+                    };
+                }
+                entry.output_total = output_total;
+
+                var input_total: u64 = 0;
+                var inputs_found: usize = 0;
+                for (tx.inputs) |input| {
+                    const prevout_hex = input.prevoutHashHex();
+                    var lookup_buf: [80]u8 = undefined;
+                    const lookup_key = std.fmt.bufPrint(&lookup_buf, "{s}:{d}", .{ prevout_hex, input.prevout_index }) catch continue;
+                    if (self.mempool_utxos.get(lookup_key)) |value| {
+                        input_total += value;
+                        inputs_found += 1;
+                    }
+                }
+
+                if (inputs_found == tx.inputs.len and inputs_found > 0) {
+                    if (input_total >= output_total and vsize > 0) {
+                        const fee = input_total - output_total;
+                        entry.fee_rate = @as(f32, @floatFromInt(fee)) / @as(f32, @floatFromInt(vsize));
+                    }
+                }
+
+                detectSpam(&tx, entry);
+            }
         }
+    }
+
+    fn detectScriptType(script: []const u8) TxType {
+        if (script.len == 25 and script[0] == 0x76 and script[1] == 0xa9 and script[2] == 0x14 and script[23] == 0x88 and script[24] == 0xac) {
+            return .p2pkh;
+        }
+        if (script.len == 23 and script[0] == 0xa9 and script[1] == 0x14 and script[22] == 0x87) {
+            return .p2sh;
+        }
+        if (script.len == 22 and script[0] == 0x00 and script[1] == 0x14) {
+            return .p2wpkh;
+        }
+        if (script.len == 34 and script[0] == 0x00 and script[1] == 0x20) {
+            return .p2wsh;
+        }
+        if (script.len == 34 and script[0] == 0x51 and script[1] == 0x20) {
+            return .p2tr;
+        }
+        return .unknown;
+    }
+
+    fn detectTxType(outputs: []const yam.TxOutput) TxType {
+        if (outputs.len == 0) return .unknown;
+        var first_type: ?TxType = null;
+        for (outputs) |output| {
+            const script_type = detectScriptType(output.script);
+            if (script_type == .unknown) continue;
+            if (first_type == null) {
+                first_type = script_type;
+            } else if (first_type != script_type) {
+                return .mixed;
+            }
+        }
+        return first_type orelse .unknown;
+    }
+
+    fn detectSpam(tx: *const yam.Transaction, entry: *MempoolEntry) void {
+        var flags = SpamFlags{};
+        var score: u32 = 0;
+        var witness_total: u32 = 0;
+
+        for (tx.outputs) |output| {
+            if (output.script.len > 0 and output.script[0] == 0x6a) {
+                flags.has_op_return = true;
+                score += 20;
+            }
+            const script_type = detectScriptType(output.script);
+            const dust_limit: u64 = switch (script_type) {
+                .p2wpkh, .p2wsh, .p2tr => 294,
+                else => 546,
+            };
+            if (output.value > 0 and output.value < dust_limit) {
+                flags.has_dust = true;
+                score += 30;
+            }
+        }
+
+        for (tx.inputs) |input| {
+            for (input.witness) |item| {
+                witness_total += @intCast(item.len);
+            }
+        }
+        entry.witness_size = witness_total;
+
+        if (witness_total > 100_000) {
+            flags.has_inscription = true;
+            score += 40;
+        } else if (witness_total > 50_000) {
+            score += 20;
+        }
+
+        if (entry.fee_rate) |rate| {
+            if (rate < 1.0) {
+                flags.low_fee = true;
+                score += 10;
+            }
+        }
+
+        entry.spam_flags = flags;
+        entry.spam_score = @intCast(@min(100, score));
+    }
+
+    fn calculateVsize(self: *Explorer, tx: *const yam.Transaction, total_size: usize) u32 {
+        if (!tx.hasWitness()) {
+            return @intCast(total_size);
+        }
+        var base_buf = std.ArrayList(u8).empty;
+        defer base_buf.deinit(self.allocator);
+        tx.serialize(base_buf.writer(self.allocator)) catch return @intCast(total_size);
+        const base_size = base_buf.items.len;
+        const weight = base_size * 3 + total_size;
+        return @intCast((weight + 3) / 4);
     }
 };
