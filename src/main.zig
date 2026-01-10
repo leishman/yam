@@ -4,7 +4,9 @@ const scout = @import("scout.zig");
 const relay = @import("relay.zig");
 const Relay = relay.Relay;
 const Explorer = @import("explorer.zig").Explorer;
-const Dashboard = @import("dashboard.zig").Dashboard;
+const dashboard = @import("dashboard.zig");
+const Dashboard = dashboard.Dashboard;
+const DashboardConfig = dashboard.DashboardConfig;
 
 const Command = enum {
     broadcast,
@@ -73,9 +75,13 @@ pub fn main() !void {
             try explorer.run();
         },
         .dashboard => {
-            var dashboard = try Dashboard.init(allocator);
-            defer dashboard.deinit();
-            try dashboard.run();
+            const config = parseDashboardArgs(&args_iter) orelse {
+                printDashboardUsage();
+                return;
+            };
+            var dash = try Dashboard.init(allocator, config);
+            defer dash.deinit();
+            try dash.run();
         },
         .help => printUsage(),
     }
@@ -108,6 +114,44 @@ fn parseBroadcastArgs(args_iter: anytype) ?BroadcastArgs {
     return result;
 }
 
+fn parseDashboardArgs(args_iter: anytype) ?DashboardConfig {
+    var config = DashboardConfig{};
+
+    while (args_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            return null;
+        } else if (std.mem.eql(u8, arg, "--port") or std.mem.eql(u8, arg, "-p")) {
+            if (args_iter.next()) |port_str| {
+                config.port = std.fmt.parseInt(u16, port_str, 10) catch 8080;
+            }
+        } else if (std.mem.eql(u8, arg, "--bind") or std.mem.eql(u8, arg, "-b")) {
+            if (args_iter.next()) |addr| {
+                config.bind_address = addr;
+            }
+        } else if (std.mem.eql(u8, arg, "--max-clients")) {
+            if (args_iter.next()) |count_str| {
+                config.max_ws_clients = std.fmt.parseInt(usize, count_str, 10) catch 100;
+            }
+        } else if (std.mem.eql(u8, arg, "--update-interval")) {
+            if (args_iter.next()) |ms_str| {
+                config.update_interval_ms = std.fmt.parseInt(u32, ms_str, 10) catch 2000;
+            }
+        } else if (std.mem.eql(u8, arg, "--read-only")) {
+            config.read_only = true;
+        } else if (std.mem.eql(u8, arg, "--no-topology")) {
+            config.disable_topology = true;
+        } else if (std.mem.eql(u8, arg, "--no-map")) {
+            config.disable_map = true;
+        } else if (std.mem.eql(u8, arg, "--state-file") or std.mem.eql(u8, arg, "-s")) {
+            if (args_iter.next()) |path| {
+                config.state_file = path;
+            }
+        }
+    }
+
+    return config;
+}
+
 fn printUsage() void {
     const usage =
         \\Yam - Bitcoin P2P Network Tool
@@ -115,10 +159,36 @@ fn printUsage() void {
         \\USAGE:
         \\  yam broadcast <tx_hex> [options]    Broadcast a transaction
         \\  yam explore                         Interactive network explorer (default)
-        \\  yam dashboard                       Web dashboard on http://localhost:8080
+        \\  yam dashboard [options]             Web dashboard
         \\  yam help                            Show this help
         \\
         \\Run 'yam broadcast --help' for broadcast options.
+        \\Run 'yam dashboard --help' for dashboard options.
+        \\
+    ;
+    std.debug.print("{s}", .{usage});
+}
+
+fn printDashboardUsage() void {
+    const usage =
+        \\USAGE:
+        \\  yam dashboard [options]
+        \\
+        \\OPTIONS:
+        \\  --port, -p <port>         Port to listen on (default: 8080)
+        \\  --bind, -b <address>      Address to bind to (default: 127.0.0.1)
+        \\  --max-clients <count>     Maximum WebSocket clients (default: 100)
+        \\  --update-interval <ms>    Update interval in milliseconds (default: 2000)
+        \\  --state-file, -s <path>   Persist state to JSON file (optional)
+        \\  --read-only               Disable peer management (disconnect/ban)
+        \\  --no-topology             Disable topology visualization
+        \\  --no-map                  Disable geographic map
+        \\
+        \\EXAMPLES:
+        \\  yam dashboard
+        \\  yam dashboard --port 9000 --bind 0.0.0.0
+        \\  yam dashboard --state-file ~/.yam-state.json
+        \\  yam dashboard --read-only
         \\
     ;
     std.debug.print("{s}", .{usage});
