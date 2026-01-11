@@ -80,11 +80,7 @@ pub const Courier = struct {
 
             // Use shared message reading utility with 4 MB limit and checksum verification
             // (courier.zig enforces stricter limits for individual peer connections)
-            const stream = self.stream orelse return error.NotConnected;
-            const message = try message_utils.readMessage(stream, self.allocator, .{
-                .max_payload_size = MAX_PAYLOAD_SIZE,
-                .verify_checksum = true,
-            });
+            const message = try self.readMessageChecked();
             defer if (message.payload.len > 0) self.allocator.free(message.payload);
 
             const cmd = std.mem.sliceTo(&message.header.command, 0);
@@ -144,13 +140,7 @@ pub const Courier = struct {
             if (elapsed > timeout_ms) return false;
 
             // Use shared message reading utility with 4 MB limit and checksum verification
-            const message = blk: {
-                const stream = self.stream orelse return error.NotConnected;
-                break :blk message_utils.readMessage(stream, self.allocator, .{
-                    .max_payload_size = MAX_PAYLOAD_SIZE,
-                    .verify_checksum = true,
-                });
-            } catch |err| {
+            const message = self.readMessageChecked() catch |err| {
                 if (err == error.WouldBlock) continue;
                 return false;
             };
@@ -182,13 +172,7 @@ pub const Courier = struct {
             if (elapsed > timeout_ms) return null;
 
             // Use shared message reading utility with 4 MB limit and checksum verification
-            const message = blk: {
-                const stream = self.stream orelse return error.NotConnected;
-                break :blk message_utils.readMessage(stream, self.allocator, .{
-                    .max_payload_size = MAX_PAYLOAD_SIZE,
-                    .verify_checksum = true,
-                });
-            } catch |err| {
+            const message = self.readMessageChecked() catch |err| {
                 if (err == error.WouldBlock) continue;
                 return null;
             };
@@ -229,5 +213,15 @@ pub const Courier = struct {
         if (payload.len > 0) {
             try stream.writeAll(payload);
         }
+    }
+
+    /// Helper method to read a message with courier's strict validation settings
+    /// (4 MB payload limit + checksum verification)
+    fn readMessageChecked(self: *Courier) !message_utils.Message {
+        const stream = self.stream orelse return error.NotConnected;
+        return message_utils.readMessage(stream, self.allocator, .{
+            .max_payload_size = MAX_PAYLOAD_SIZE,
+            .verify_checksum = true,
+        });
     }
 };
