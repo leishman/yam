@@ -85,6 +85,28 @@ Status:
 > q                     # quit
 ```
 
+### Dashboard Mode
+
+```
+./zig-out/bin/yam dashboard [options]
+```
+
+Options:
+- `--port, -p <port>` - HTTP port (default: 8080)
+- `--bind, -b <addr>` - Bind address (default: 127.0.0.1)
+- `--read-only, -r` - Disable peer management actions
+- `--state-file, -s <path>` - Persist state to file
+- `--disable-topology` - Hide topology visualization
+- `--disable-map` - Hide geographic map
+- `--update-interval <ms>` - WebSocket update interval (default: 2000)
+
+Opens a web dashboard at http://127.0.0.1:8080 with:
+- Real-time network stats via WebSocket
+- Connected peers with latency and traffic metrics
+- Mempool transaction monitoring
+- Peer ban/unban management
+- REST API for programmatic access
+
 ### Broadcast Mode (still WIP)
 
 ```

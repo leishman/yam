@@ -38,7 +38,13 @@ pub const NodeMetadata = struct {
     latency_ms: ?u64 = null,
     pending_ping_time: ?i64 = null,
     pending_ping_nonce: ?u64 = null,
-    // Future: protocol_version, start_height, etc.
+    bytes_in: u64 = 0,
+    bytes_out: u64 = 0,
+    msgs_in: u64 = 0,
+    msgs_out: u64 = 0,
+    connect_time: ?i64 = null,
+    start_height: u32 = 0,
+    fee_filter: u64 = 0,
 
     pub fn canServeWitnesses(self: NodeMetadata) bool {
         return (self.services & yam.ServiceFlags.NODE_WITNESS) != 0;
@@ -124,6 +130,13 @@ pub const Explorer = struct {
     should_stop: std.atomic.Value(bool),
     fd_error_logged: std.atomic.Value(bool),
 
+    msg_type_counts: std.StringHashMap(u64),
+    last_block_hash: ?[64]u8 = null,
+    last_block_time: ?i64 = null,
+    blocks_seen: u64 = 0,
+    session_start: i64,
+    highest_peer_height: u32 = 0,
+
     pub fn init(allocator: std.mem.Allocator) !*Explorer {
         const self = try allocator.create(Explorer);
         self.* = .{
@@ -141,6 +154,8 @@ pub const Explorer = struct {
             .mutex = .{},
             .should_stop = std.atomic.Value(bool).init(false),
             .fd_error_logged = std.atomic.Value(bool).init(false),
+            .msg_type_counts = std.StringHashMap(u64).init(allocator),
+            .session_start = std.time.timestamp(),
         };
         return self;
     }
@@ -187,6 +202,11 @@ pub const Explorer = struct {
 
         self.known_nodes.deinit(self.allocator);
         self.pending_commands.deinit(self.allocator);
+        var msg_iter = self.msg_type_counts.keyIterator();
+        while (msg_iter.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.msg_type_counts.deinit();
         self.allocator.destroy(self);
     }
 
@@ -1235,7 +1255,7 @@ pub const Explorer = struct {
     // Manager Thread
     // =========================================================================
 
-    fn managerThread(self: *Explorer) void {
+    pub fn managerThread(self: *Explorer) void {
         while (!self.should_stop.load(.acquire)) {
             self.processPendingCommands();
             self.pollConnections();
@@ -1315,7 +1335,8 @@ pub const Explorer = struct {
         const conn = self.connections.get(node_index) orelse return;
         const checksum = yam.calculateChecksum(&.{});
         const header = yam.MessageHeader.new("getaddr", 0, checksum);
-        _ = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch {};
+        const written = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch 0;
+        self.trackBytesOut(node_index, written);
     }
 
     fn sendPing(self: *Explorer, node_index: usize) void {
@@ -1337,8 +1358,9 @@ pub const Explorer = struct {
         const payload = std.mem.asBytes(&nonce);
         const checksum = yam.calculateChecksum(payload);
         const header = yam.MessageHeader.new("ping", @intCast(payload.len), checksum);
-        _ = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch return;
-        _ = platform.socketWrite(conn.socket, payload) catch return;
+        const h_written = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch return;
+        const p_written = platform.socketWrite(conn.socket, payload) catch return;
+        self.trackBytesOut(node_index, h_written + p_written);
     }
 
     fn pollConnections(self: *Explorer) void {
@@ -1429,15 +1451,16 @@ pub const Explorer = struct {
             return;
         }
 
-        self.sendVersionMessage(socket) catch {
+        self.sendVersionMessage(node_index) catch {
             self.mutex.lock();
             self.closeConnectionByIndex(node_index);
             self.mutex.unlock();
         };
     }
 
-    fn sendVersionMessage(self: *Explorer, socket: std.posix.socket_t) !void {
-        _ = self;
+    fn sendVersionMessage(self: *Explorer, node_index: usize) !void {
+        const conn = self.connections.get(node_index) orelse return error.NotFound;
+
         var nonce: u64 = undefined;
         try std.posix.getrandom(std.mem.asBytes(&nonce));
 
@@ -1455,8 +1478,9 @@ pub const Explorer = struct {
         const checksum = yam.calculateChecksum(payload);
         const header = yam.MessageHeader.new("version", @intCast(payload.len), checksum);
 
-        _ = try platform.socketWrite(socket, std.mem.asBytes(&header));
-        _ = try platform.socketWrite(socket, payload);
+        const h_written = try platform.socketWrite(conn.socket, std.mem.asBytes(&header));
+        const p_written = try platform.socketWrite(conn.socket, payload);
+        self.trackBytesOut(node_index, h_written + p_written);
     }
 
     fn handleIncoming(self: *Explorer, node_index: usize) void {
@@ -1497,7 +1521,25 @@ pub const Explorer = struct {
 
         const cmd = std.mem.sliceTo(&header.command, 0);
 
+        // Track bytes and message stats
         self.mutex.lock();
+        if (self.node_metadata.getPtr(node_index)) |meta| {
+            meta.bytes_in += header_read + payload_read;
+            meta.msgs_in += 1;
+        }
+        // Track message type counts
+        if (cmd.len > 0) {
+            if (self.msg_type_counts.getPtr(cmd)) |count| {
+                count.* += 1;
+            } else {
+                const key = self.allocator.dupe(u8, cmd) catch null;
+                if (key) |k| {
+                    self.msg_type_counts.put(k, 1) catch {
+                        self.allocator.free(k);
+                    };
+                }
+            }
+        }
         const conn2 = self.connections.get(node_index);
         self.mutex.unlock();
 
@@ -1509,15 +1551,17 @@ pub const Explorer = struct {
         }
 
         if (std.mem.eql(u8, cmd, "ping")) {
-            self.sendPong(socket, payload[0..payload_read]);
+            self.sendPong(socket, node_index, payload[0..payload_read]);
         } else if (std.mem.eql(u8, cmd, "pong")) {
             self.handlePongMessage(node_index, payload[0..payload_read]);
         } else if (std.mem.eql(u8, cmd, "addr")) {
             self.handleAddrMessage(node_index, conn2.?, payload[0..payload_read]);
         } else if (std.mem.eql(u8, cmd, "inv")) {
-            self.handleInvMessage(node_index, conn2.?, socket, payload[0..payload_read]);
+            self.handleInvMessage(node_index, conn2.?, payload[0..payload_read]);
         } else if (std.mem.eql(u8, cmd, "tx")) {
             self.handleTxMessage(payload[0..payload_read]);
+        } else if (std.mem.eql(u8, cmd, "feefilter")) {
+            self.handleFeefilterMessage(node_index, payload[0..payload_read]);
         }
 
         if (conn2.?.streaming and !std.mem.eql(u8, cmd, "addr") and !std.mem.eql(u8, cmd, "inv") and !std.mem.eql(u8, cmd, "tx")) {
@@ -1554,6 +1598,12 @@ pub const Explorer = struct {
                         }
                         e.value_ptr.user_agent = ua;
                         e.value_ptr.services = version_msg.services;
+                        if (version_msg.start_height > 0) {
+                            e.value_ptr.start_height = @intCast(version_msg.start_height);
+                            if (e.value_ptr.start_height > self.highest_peer_height) {
+                                self.highest_peer_height = e.value_ptr.start_height;
+                            }
+                        }
                     } else {
                         self.allocator.free(ua);
                     }
@@ -1564,7 +1614,8 @@ pub const Explorer = struct {
                 conn.handshake_state.sent_verack = true;
                 const checksum = yam.calculateChecksum(&.{});
                 const header = yam.MessageHeader.new("verack", 0, checksum);
-                _ = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch {};
+                const written = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch 0;
+                self.trackBytesOut(node_index, written);
             }
         } else if (std.mem.eql(u8, cmd, "verack")) {
             conn.handshake_state.received_verack = true;
@@ -1580,18 +1631,27 @@ pub const Explorer = struct {
                     e.value_ptr.* = .{};
                 }
                 e.value_ptr.ever_connected = true;
+                e.value_ptr.connect_time = std.time.timestamp();
             }
         }
     }
 
-    fn sendPong(self: *Explorer, socket: std.posix.socket_t, ping_payload: []const u8) void {
-        _ = self;
+    fn trackBytesOut(self: *Explorer, node_index: usize, bytes: usize) void {
+        if (self.node_metadata.getPtr(node_index)) |meta| {
+            meta.bytes_out += bytes;
+            meta.msgs_out += 1;
+        }
+    }
+
+    fn sendPong(self: *Explorer, socket: std.posix.socket_t, node_index: usize, ping_payload: []const u8) void {
         const checksum = yam.calculateChecksum(ping_payload);
         const header = yam.MessageHeader.new("pong", @intCast(ping_payload.len), checksum);
-        _ = platform.socketWrite(socket, std.mem.asBytes(&header)) catch {};
+        const h_written = platform.socketWrite(socket, std.mem.asBytes(&header)) catch 0;
+        var p_written: usize = 0;
         if (ping_payload.len > 0) {
-            _ = platform.socketWrite(socket, ping_payload) catch {};
+            p_written = platform.socketWrite(socket, ping_payload) catch 0;
         }
+        self.trackBytesOut(node_index, h_written + p_written);
     }
 
     fn handlePongMessage(self: *Explorer, node_index: usize, payload: []const u8) void {
@@ -1686,7 +1746,7 @@ pub const Explorer = struct {
         }
     }
 
-    fn handleInvMessage(self: *Explorer, node_index: usize, conn: *Connection, socket: std.posix.socket_t, payload: []const u8) void {
+    fn handleInvMessage(self: *Explorer, node_index: usize, conn: *Connection, payload: []const u8) void {
         if (payload.len < 1) return;
 
         var fbs = std.io.fixedBufferStream(payload);
@@ -1701,7 +1761,14 @@ pub const Explorer = struct {
         defer tx_invs.deinit(self.allocator);
 
         for (inv_msg.vectors) |inv| {
-            // Only care about transactions (type 1)
+            // Track block announcements
+            if (inv.type == .msg_block) {
+                const block_hash_hex = inv.hashHex();
+                self.last_block_hash = block_hash_hex;
+                self.last_block_time = std.time.timestamp();
+                self.blocks_seen += 1;
+            }
+            // Handle transactions (type 1)
             if (inv.type == .msg_tx or inv.type == .msg_witness_tx) {
                 tx_count += 1;
                 const txid_hex = inv.hashHex();
@@ -1732,7 +1799,7 @@ pub const Explorer = struct {
 
         // Send getdata for new transactions
         if (tx_invs.items.len > 0) {
-            self.sendGetdata(socket, tx_invs.items);
+            self.sendGetdata(node_index, tx_invs.items);
         }
 
         if (tx_count > 0 and conn.streaming) {
@@ -1748,8 +1815,8 @@ pub const Explorer = struct {
         }
     }
 
-    fn sendGetdata(self: *Explorer, socket: std.posix.socket_t, invs: []const yam.InvVector) void {
-        _ = self;
+    fn sendGetdata(self: *Explorer, node_index: usize, invs: []const yam.InvVector) void {
+        const conn = self.connections.get(node_index) orelse return;
 
         // Build getdata message
         var payload_buf: [65536]u8 = undefined;
@@ -1768,8 +1835,9 @@ pub const Explorer = struct {
         const checksum = yam.calculateChecksum(payload);
         const header = yam.MessageHeader.new("getdata", @intCast(payload.len), checksum);
 
-        _ = platform.socketWrite(socket, std.mem.asBytes(&header)) catch return;
-        _ = platform.socketWrite(socket, payload) catch return;
+        const h_written = platform.socketWrite(conn.socket, std.mem.asBytes(&header)) catch return;
+        const p_written = platform.socketWrite(conn.socket, payload) catch return;
+        self.trackBytesOut(node_index, h_written + p_written);
     }
 
     fn handleTxMessage(self: *Explorer, payload: []const u8) void {
@@ -1787,6 +1855,14 @@ pub const Explorer = struct {
             if (entry.tx_data == null) {
                 entry.tx_data = self.allocator.dupe(u8, payload) catch null;
             }
+        }
+    }
+
+    fn handleFeefilterMessage(self: *Explorer, node_index: usize, payload: []const u8) void {
+        if (payload.len < 8) return;
+        const fee_rate = std.mem.readInt(u64, payload[0..8], .little);
+        if (self.node_metadata.getPtr(node_index)) |meta| {
+            meta.fee_filter = fee_rate;
         }
     }
 };
