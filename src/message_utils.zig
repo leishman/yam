@@ -79,7 +79,6 @@ pub fn readMessage(
         while (total_read < header.length) {
             const bytes_read = try stream.read(payload[total_read..]);
             if (bytes_read == 0) {
-                allocator.free(payload);
                 return error.ConnectionClosed;
             }
             total_read += bytes_read;
@@ -89,7 +88,6 @@ pub fn readMessage(
         if (options.verify_checksum) {
             const calculated_checksum = yam.calculateChecksum(payload);
             if (calculated_checksum != header.checksum) {
-                allocator.free(payload);
                 return error.InvalidChecksum;
             }
         }
