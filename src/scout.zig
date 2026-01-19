@@ -145,9 +145,11 @@ fn queryPeerForAddresses(allocator: std.mem.Allocator, peer: yam.PeerInfo) ![]ya
         const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start);
         if (elapsed > timeout_ns) break;
 
-        // Use shared message reading utility with no size limit and no checksum verification
-        // (scout.zig is more permissive for peer discovery handshakes)
-        const message = message_utils.readMessage(stream, allocator, .{}) catch break;
+        // Use same strict validation as courier (4MB limit + checksum verification)
+        const message = message_utils.readMessage(stream, allocator, .{
+            .max_payload_size = 4_000_000,
+            .verify_checksum = true,
+        }) catch break;
         defer if (message.payload.len > 0) allocator.free(message.payload);
 
         const cmd = std.mem.sliceTo(&message.header.command, 0);
@@ -190,8 +192,11 @@ fn performHandshake(stream: std.net.Stream, allocator: std.mem.Allocator) !void 
     var received_verack = false;
 
     while (!received_version or !received_verack) {
-        // Use shared message reading utility with no size limit and no checksum verification
-        const message = try message_utils.readMessage(stream, allocator, .{});
+        // Use same strict validation as courier (4MB limit + checksum verification)
+        const message = try message_utils.readMessage(stream, allocator, .{
+            .max_payload_size = 4_000_000,
+            .verify_checksum = true,
+        });
         defer if (message.payload.len > 0) allocator.free(message.payload);
 
         const cmd = std.mem.sliceTo(&message.header.command, 0);
