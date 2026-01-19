@@ -25,6 +25,12 @@ WARNING: It has mostly been tested on MacOS. Windows has basic support. Linux su
 ./zig-out/bin/yam
 ```
 
+Signet (optional):
+```
+./zig-out/bin/yam --signet explore
+./zig-out/bin/yam --signet <challenge_hex> explore
+```
+
 Commands:
 ```
 discover, d            Discover nodes via DNS seeds
@@ -89,6 +95,11 @@ Status:
 
 ```
 ./zig-out/bin/yam broadcast <tx_hex> [options]
+```
+
+Signet:
+```
+./zig-out/bin/yam --signet broadcast <tx_hex> [options]
 ```
 
 Options:

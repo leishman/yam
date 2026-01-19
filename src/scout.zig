@@ -23,14 +23,44 @@ const fallback_peers = [_]struct { ip: []const u8, port: u16 }{
     .{ .ip = "49.13.4.145", .port = 8333 },
 };
 
-/// Discover peers via DNS seeds
+/// Discover peers via DNS seeds (mainnet or public signet)
+/// For custom signet returns empty list - use 'connect' command in explorer
 pub fn discoverPeers(allocator: std.mem.Allocator) !std.ArrayList(yam.PeerInfo) {
     var peers = std.ArrayList(yam.PeerInfo).empty;
     errdefer peers.deinit(allocator);
 
+    if (yam.network.is_signet) {
+        if (!yam.network.has_signet_seeds) {
+            std.debug.print("Signet mode: use 'connect <ip:port>' to add peers\n", .{});
+            return peers;
+        }
+
+        for (yam.network.signet_dns_seeds) |seed| {
+            const addresses = std.net.getAddressList(allocator, seed, yam.network.default_port) catch |err| {
+                std.debug.print("DNS lookup failed for {s}: {}\n", .{ seed, err });
+                continue;
+            };
+            defer addresses.deinit();
+
+            for (addresses.addrs) |addr| {
+                // Only add IPv4 for now
+                if (addr.any.family == std.posix.AF.INET) {
+                    try peers.append(allocator, .{
+                        .address = addr,
+                        .services = 0,
+                        .source = .dns_seed,
+                    });
+                }
+            }
+        }
+
+        std.debug.print("Discovered {d} peers\n", .{peers.items.len});
+        return peers;
+    }
+
     // Try DNS seeds
     for (dns_seeds) |seed| {
-        const addresses = std.net.getAddressList(allocator, seed, 8333) catch |err| {
+        const addresses = std.net.getAddressList(allocator, seed, yam.network.default_port) catch |err| {
             std.debug.print("DNS lookup failed for {s}: {}\n", .{ seed, err });
             continue;
         };
@@ -228,7 +258,7 @@ fn readMessage(stream: std.net.Stream, allocator: std.mem.Allocator) !struct { h
     const header_ptr = std.mem.bytesAsValue(yam.MessageHeader, &header_buffer);
     const header = header_ptr.*;
 
-    if (header.magic != 0xD9B4BEF9) return error.InvalidMagic;
+    if (header.magic != yam.network.magic) return error.InvalidMagic;
 
     var payload: []u8 = &.{};
     if (header.length > 0) {

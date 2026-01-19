@@ -181,7 +181,7 @@ pub const Courier = struct {
         const header_ptr = std.mem.bytesAsValue(yam.MessageHeader, &header_buffer);
         const header = header_ptr.*;
 
-        if (header.magic != 0xD9B4BEF9) return error.InvalidMagic;
+        if (header.magic != yam.network.magic) return error.InvalidMagic;
 
         var payload: []u8 = &.{};
         if (header.length > 0) {

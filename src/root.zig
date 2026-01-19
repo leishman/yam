@@ -2,15 +2,17 @@
 // https://en.bitcoin.it/wiki/Protocol_documentation was used as the reference for this implementation.
 
 const std = @import("std");
+pub const network = @import("network.zig");
 
 pub const MessageHeader = extern struct {
-    magic: u32 = 0xD9B4BEF9,
+    magic: u32,
     command: [12]u8,
     length: u32,
     checksum: u32,
 
     pub fn new(cmd: []const u8, payload_len: u32, payload_checksum: u32) MessageHeader {
         var header = MessageHeader{
+            .magic = network.magic,
             .command = [_]u8{0} ** 12,
             .length = payload_len,
             .checksum = payload_checksum,
