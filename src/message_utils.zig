@@ -120,7 +120,7 @@ test "readMessage with valid empty payload" {
 
     // Create a test stream - we need to wrap the reader as a Stream
     var fbs = std.io.fixedBufferStream(buffer.items);
-    const reader = fbs.reader();
+    _ = fbs.reader();
     
     // Since readMessage expects std.net.Stream, we can't directly test it with a buffer
     // This test validates the approach but would need actual network testing
