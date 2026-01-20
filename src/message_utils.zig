@@ -99,3 +99,42 @@ pub fn readMessage(
 
     return .{ .header = header, .payload = payload };
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+test "MAX_PAYLOAD_SIZE constant value" {
+    try std.testing.expectEqual(@as(u32, 4_000_000), MAX_PAYLOAD_SIZE);
+}
+
+test "ReadMessageOptions default values" {
+    const opts = ReadMessageOptions{};
+    try std.testing.expectEqual(@as(?u32, null), opts.max_payload_size);
+    try std.testing.expectEqual(false, opts.verify_checksum);
+}
+
+test "ReadMessageOptions with custom values" {
+    const opts = ReadMessageOptions{
+        .max_payload_size = MAX_PAYLOAD_SIZE,
+        .verify_checksum = true,
+    };
+    try std.testing.expectEqual(@as(?u32, 4_000_000), opts.max_payload_size);
+    try std.testing.expectEqual(true, opts.verify_checksum);
+}
+
+test "Message struct basic usage" {
+    const allocator = std.testing.allocator;
+    
+    const header = yam.MessageHeader.new("test", 0, 0);
+    const payload = try allocator.alloc(u8, 0);
+    defer allocator.free(payload);
+    
+    const message = Message{
+        .header = header,
+        .payload = payload,
+    };
+    
+    try std.testing.expectEqual(@as(u32, 0xD9B4BEF9), message.header.magic);
+    try std.testing.expectEqual(@as(usize, 0), message.payload.len);
+}
