@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const yam = @import("root.zig");
+const message_utils = @import("message_utils.zig");
 
 /// DNS seeds for Bitcoin mainnet peer discovery
 const dns_seeds = [_][]const u8{
@@ -144,7 +145,11 @@ fn queryPeerForAddresses(allocator: std.mem.Allocator, peer: yam.PeerInfo) ![]ya
         const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start);
         if (elapsed > timeout_ns) break;
 
-        const message = readMessage(stream, allocator) catch break;
+        // Use same strict validation as courier (4MB limit + checksum verification)
+        const message = message_utils.readMessage(stream, allocator, .{
+            .max_payload_size = message_utils.MAX_PAYLOAD_SIZE,
+            .verify_checksum = true,
+        }) catch break;
         defer if (message.payload.len > 0) allocator.free(message.payload);
 
         const cmd = std.mem.sliceTo(&message.header.command, 0);
@@ -185,9 +190,19 @@ fn performHandshake(stream: std.net.Stream, allocator: std.mem.Allocator) !void 
 
     var received_version = false;
     var received_verack = false;
+    const timeout_ms: i64 = 30_000;
+    const start = std.time.milliTimestamp();
 
     while (!received_version or !received_verack) {
-        const message = try readMessage(stream, allocator);
+        if (std.time.milliTimestamp() - start > timeout_ms) {
+            return error.HandshakeTimeout;
+        }
+
+        // Use same strict validation as courier (4MB limit + checksum verification)
+        const message = try message_utils.readMessage(stream, allocator, .{
+            .max_payload_size = message_utils.MAX_PAYLOAD_SIZE,
+            .verify_checksum = true,
+        });
         defer if (message.payload.len > 0) allocator.free(message.payload);
 
         const cmd = std.mem.sliceTo(&message.header.command, 0);
@@ -214,41 +229,6 @@ fn sendMessage(stream: std.net.Stream, command: []const u8, payload: []const u8)
     if (payload.len > 0) {
         try stream.writeAll(payload);
     }
-}
-
-fn readMessage(stream: std.net.Stream, allocator: std.mem.Allocator) !struct { header: yam.MessageHeader, payload: []u8 } {
-    var header_buffer: [24]u8 align(4) = undefined;
-    var total_read: usize = 0;
-    while (total_read < header_buffer.len) {
-        const bytes_read = try stream.read(header_buffer[total_read..]);
-        if (bytes_read == 0) return error.ConnectionClosed;
-        total_read += bytes_read;
-    }
-
-    const header_ptr = std.mem.bytesAsValue(yam.MessageHeader, &header_buffer);
-    const header = header_ptr.*;
-
-    if (header.magic != 0xD9B4BEF9) return error.InvalidMagic;
-
-    var payload: []u8 = &.{};
-    if (header.length > 0) {
-        if (header.length > 4_000_000) return error.PayloadTooLarge;
-
-        payload = try allocator.alloc(u8, header.length);
-        errdefer allocator.free(payload);
-
-        total_read = 0;
-        while (total_read < header.length) {
-            const bytes_read = try stream.read(payload[total_read..]);
-            if (bytes_read == 0) return error.ConnectionClosed;
-            total_read += bytes_read;
-        }
-
-        const calculated_checksum = yam.calculateChecksum(payload);
-        if (calculated_checksum != header.checksum) return error.InvalidChecksum;
-    }
-
-    return .{ .header = header, .payload = payload };
 }
 
 /// Select random peers from a list
