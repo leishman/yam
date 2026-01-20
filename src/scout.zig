@@ -190,8 +190,14 @@ fn performHandshake(stream: std.net.Stream, allocator: std.mem.Allocator) !void 
 
     var received_version = false;
     var received_verack = false;
+    const timeout_ms: i64 = 30_000;
+    const start = std.time.milliTimestamp();
 
     while (!received_version or !received_verack) {
+        if (std.time.milliTimestamp() - start > timeout_ms) {
+            return error.HandshakeTimeout;
+        }
+
         // Use same strict validation as courier (4MB limit + checksum verification)
         const message = try message_utils.readMessage(stream, allocator, .{
             .max_payload_size = 4_000_000,
