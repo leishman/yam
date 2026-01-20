@@ -5,6 +5,10 @@
 const std = @import("std");
 const yam = @import("root.zig");
 
+/// Maximum payload size for peer messages (4 MB)
+/// This limit prevents memory exhaustion from malicious or misbehaving peers
+pub const MAX_PAYLOAD_SIZE: u32 = 4_000_000;
+
 /// Options for configuring message reading behavior
 pub const ReadMessageOptions = struct {
     /// Maximum allowed payload size in bytes. If null, no limit is enforced.

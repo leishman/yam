@@ -147,7 +147,7 @@ fn queryPeerForAddresses(allocator: std.mem.Allocator, peer: yam.PeerInfo) ![]ya
 
         // Use same strict validation as courier (4MB limit + checksum verification)
         const message = message_utils.readMessage(stream, allocator, .{
-            .max_payload_size = 4_000_000,
+            .max_payload_size = message_utils.MAX_PAYLOAD_SIZE,
             .verify_checksum = true,
         }) catch break;
         defer if (message.payload.len > 0) allocator.free(message.payload);
@@ -200,7 +200,7 @@ fn performHandshake(stream: std.net.Stream, allocator: std.mem.Allocator) !void 
 
         // Use same strict validation as courier (4MB limit + checksum verification)
         const message = try message_utils.readMessage(stream, allocator, .{
-            .max_payload_size = 4_000_000,
+            .max_payload_size = message_utils.MAX_PAYLOAD_SIZE,
             .verify_checksum = true,
         });
         defer if (message.payload.len > 0) allocator.free(message.payload);
