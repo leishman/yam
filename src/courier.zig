@@ -163,46 +163,6 @@ pub const Courier = struct {
         }
     }
 
-    /// Wait for a reject message (returns reason if rejected, null if no reject)
-    pub fn waitForReject(self: *Courier, timeout_ms: u64) !?[]u8 {
-        const start = std.time.milliTimestamp();
-
-        while (true) {
-            const elapsed: u64 = @intCast(std.time.milliTimestamp() - start);
-            if (elapsed > timeout_ms) return null;
-
-            // Use shared message reading utility with 4 MB limit and checksum verification
-            const message = self.readMessageChecked() catch |err| {
-                if (err == error.WouldBlock) continue;
-                return null;
-            };
-
-            const cmd = std.mem.sliceTo(&message.header.command, 0);
-
-            if (std.mem.eql(u8, cmd, "reject")) {
-                var fbs = std.io.fixedBufferStream(message.payload);
-                const reject = yam.RejectMessage.deserialize(fbs.reader(), self.allocator) catch {
-                    self.allocator.free(message.payload);
-                    return try self.allocator.dupe(u8, "unknown reject");
-                };
-                defer {
-                    self.allocator.free(reject.message);
-                    self.allocator.free(reject.data);
-                }
-
-                // Keep the reason, free the rest
-                if (message.payload.len > 0) self.allocator.free(message.payload);
-                return reject.reason;
-            } else if (std.mem.eql(u8, cmd, "ping")) {
-                // Respond to pings
-                try self.sendMessage("pong", message.payload);
-                if (message.payload.len > 0) self.allocator.free(message.payload);
-            } else {
-                if (message.payload.len > 0) self.allocator.free(message.payload);
-            }
-        }
-    }
-
     fn sendMessage(self: *Courier, command: []const u8, payload: []const u8) !void {
         const stream = self.stream orelse return error.NotConnected;
 
