@@ -108,6 +108,21 @@ Examples:
 ./zig-out/bin/yam broadcast 0100000001... --discover
 ```
 
+### Signet
+
+Set `YAM_SIGNET` environment variable to use signet instead of mainnet:
+
+```
+# Default public signet
+YAM_SIGNET=1 ./zig-out/bin/yam
+
+# Custom signet (provide challenge hex)
+YAM_SIGNET=<challenge_hex> ./zig-out/bin/yam
+
+# Works with any command
+YAM_SIGNET=1 ./zig-out/bin/yam broadcast 0100000001...
+```
+
 ## Export Formats
 
 **nodes.csv**

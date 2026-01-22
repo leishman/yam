@@ -504,11 +504,11 @@ pub const Explorer = struct {
 
     fn addNodeFromString(self: *Explorer, addr_str: []const u8) !usize {
         // Parse ip:port format
-        var port: u16 = 8333; // default Bitcoin port
+        var port: u16 = yam.network.default_port;
         var ip_str = addr_str;
 
         if (std.mem.lastIndexOfScalar(u8, addr_str, ':')) |colon_idx| {
-            port = std.fmt.parseInt(u16, addr_str[colon_idx + 1 ..], 10) catch 8333;
+            port = std.fmt.parseInt(u16, addr_str[colon_idx + 1 ..], 10) catch yam.network.default_port;
             ip_str = addr_str[0..colon_idx];
         }
 
@@ -1486,7 +1486,7 @@ pub const Explorer = struct {
         if (header_read < 24) return;
 
         const header = std.mem.bytesAsValue(yam.MessageHeader, &header_buf).*;
-        if (header.magic != 0xD9B4BEF9) return;
+        if (header.magic != yam.network.magic) return;
 
         var payload: [65536]u8 = undefined;
         const payload_len = @min(header.length, payload.len);

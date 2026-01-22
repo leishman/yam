@@ -34,6 +34,18 @@ pub fn main() !void {
     // Skip program name
     _ = args_iter.next();
 
+    // Initialize network from environment (YAM_SIGNET)
+    yam.network.initFromEnv(allocator) catch |err| {
+        std.debug.print("Error: Invalid YAM_SIGNET challenge: {}\n", .{err});
+        return;
+    };
+    if (yam.network.is_signet) {
+        std.debug.print("Signet mode: magic=0x{X:0>8} port={d}\n\n", .{
+            yam.network.magic,
+            yam.network.default_port,
+        });
+    }
+
     // Get subcommand
     const cmd_str = args_iter.next() orelse {
         // No args = explore mode
