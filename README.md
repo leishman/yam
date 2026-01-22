@@ -25,12 +25,6 @@ WARNING: It has mostly been tested on MacOS. Windows has basic support. Linux su
 ./zig-out/bin/yam
 ```
 
-Signet (optional):
-```
-./zig-out/bin/yam --signet explore
-./zig-out/bin/yam --signet <challenge_hex> explore
-```
-
 Commands:
 ```
 discover, d            Discover nodes via DNS seeds
@@ -97,11 +91,6 @@ Status:
 ./zig-out/bin/yam broadcast <tx_hex> [options]
 ```
 
-Signet:
-```
-./zig-out/bin/yam --signet broadcast <tx_hex> [options]
-```
-
 Options:
 - `--peers, -p <n>` - number of peers (default: 8)
 - `--simultaneous, -s` - send to all peers at once (default: staggered)
@@ -117,6 +106,21 @@ Examples:
 
 # use recursive peer discovery first
 ./zig-out/bin/yam broadcast 0100000001... --discover
+```
+
+### Signet
+
+Set `YAM_SIGNET` environment variable to use signet instead of mainnet:
+
+```
+# Default public signet
+YAM_SIGNET=1 ./zig-out/bin/yam
+
+# Custom signet (provide challenge hex)
+YAM_SIGNET=<challenge_hex> ./zig-out/bin/yam
+
+# Works with any command
+YAM_SIGNET=1 ./zig-out/bin/yam broadcast 0100000001...
 ```
 
 ## Export Formats

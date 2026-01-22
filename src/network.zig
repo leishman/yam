@@ -1,6 +1,7 @@
 // Network.zig - Network configuration (mainnet/signet)
 //
-// Usage: yam --signet <challenge_hex> [command]
+// Signet mode: Set YAM_SIGNET=1 for default public signet, or
+//              YAM_SIGNET=<challenge_hex> for custom signet.
 //
 // These are "set once at startup" static variables - never modified after init.
 
@@ -51,32 +52,22 @@ pub fn initSignetDefault() !void {
     has_signet_seeds = true;
 }
 
-pub const SignetParseResult = struct {
-    cmd_arg: ?[]const u8,
-    enabled: bool,
-};
+/// Initialize network from YAM_SIGNET environment variable.
+/// - Not set: mainnet (no-op)
+/// - "1" or empty: default public signet
+/// - Otherwise: custom signet challenge hex
+pub fn initFromEnv(allocator: std.mem.Allocator) !void {
+    const val = std.process.getEnvVarOwned(allocator, "YAM_SIGNET") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return,
+        else => return err,
+    };
+    defer allocator.free(val);
 
-/// Parse leading --signet flag and initialize network settings.
-/// Returns the command argument to use (if any).
-pub fn parseSignetArgs(args_iter: anytype) !SignetParseResult {
-    const first_arg = args_iter.next();
-    if (first_arg) |arg| {
-        if (std.mem.eql(u8, arg, "--signet")) {
-            const maybe_next = args_iter.next();
-            if (maybe_next) |next| {
-                if (isCommandArg(next)) {
-                    try initSignetDefault();
-                    return .{ .cmd_arg = next, .enabled = true };
-                }
-                try initSignet(next);
-                return .{ .cmd_arg = args_iter.next(), .enabled = true };
-            }
-            try initSignetDefault();
-            return .{ .cmd_arg = args_iter.next(), .enabled = true };
-        }
+    if (val.len == 0 or std.mem.eql(u8, val, "1")) {
+        try initSignetDefault();
+    } else {
+        try initSignet(val);
     }
-
-    return .{ .cmd_arg = first_arg, .enabled = false };
 }
 
 /// Compute signet magic from challenge hex.
@@ -141,14 +132,6 @@ fn encodeCompactSize(buf: *[9]u8, value: u64) usize {
         buf[8] = @intCast((v >> 56) & 0xff);
         return 9;
     }
-}
-
-fn isCommandArg(arg: []const u8) bool {
-    return std.mem.eql(u8, arg, "broadcast") or
-        std.mem.eql(u8, arg, "explore") or
-        std.mem.eql(u8, arg, "help") or
-        std.mem.eql(u8, arg, "--help") or
-        std.mem.eql(u8, arg, "-h");
 }
 
 test "compute signet magic from BIP-325 example" {

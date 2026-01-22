@@ -34,12 +34,12 @@ pub fn main() !void {
     // Skip program name
     _ = args_iter.next();
 
-    // Check for --signet flag (must come before subcommand)
-    const signet_result = yam.network.parseSignetArgs(&args_iter) catch |err| {
-        std.debug.print("Error: Invalid signet challenge: {}\n", .{err});
+    // Initialize network from environment (YAM_SIGNET)
+    yam.network.initFromEnv(allocator) catch |err| {
+        std.debug.print("Error: Invalid YAM_SIGNET challenge: {}\n", .{err});
         return;
     };
-    if (signet_result.enabled) {
+    if (yam.network.is_signet) {
         std.debug.print("Signet mode: magic=0x{X:0>8} port={d}\n\n", .{
             yam.network.magic,
             yam.network.default_port,
@@ -47,7 +47,7 @@ pub fn main() !void {
     }
 
     // Get subcommand
-    const cmd_str = signet_result.cmd_arg orelse {
+    const cmd_str = args_iter.next() orelse {
         // No args = explore mode
         var explorer = try Explorer.init(allocator);
         defer explorer.deinit();
@@ -116,26 +116,15 @@ fn printUsage() void {
         \\Yam - Bitcoin P2P Network Tool
         \\
         \\USAGE:
-        \\  yam <command> [options]
-        \\
-        \\OPTIONS:
-        \\  --signet [hex]    Use signet network (optional custom challenge)
-        \\
-        \\COMMANDS:
-        \\  broadcast <tx_hex>    Broadcast a transaction
-        \\  explore               Interactive network explorer (default)
-        \\  help                  Show this help
-        \\
-        \\EXAMPLES:
-        \\  yam                                              Mainnet explorer
-        \\  yam broadcast 0100000001...                     Broadcast transaction
+        \\  yam broadcast <tx_hex> [options]    Broadcast a transaction
+        \\  yam explore                         Interactive network explorer (default)
+        \\  yam help                            Show this help
         \\
         \\Run 'yam broadcast --help' for broadcast options.
         \\
     ;
     std.debug.print("{s}", .{usage});
 }
-
 
 fn printBroadcastUsage() void {
     const usage =
