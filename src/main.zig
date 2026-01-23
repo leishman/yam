@@ -4,10 +4,12 @@ const scout = @import("scout.zig");
 const relay = @import("relay.zig");
 const Relay = relay.Relay;
 const Explorer = @import("explorer.zig").Explorer;
+const dashboard = @import("dashboard.zig");
 
 const Command = enum {
     broadcast,
     explore,
+    dashboard,
     help,
 };
 
@@ -47,6 +49,8 @@ pub fn main() !void {
         .broadcast
     else if (std.mem.eql(u8, cmd_str, "explore"))
         .explore
+    else if (std.mem.eql(u8, cmd_str, "dashboard"))
+        .dashboard
     else if (std.mem.eql(u8, cmd_str, "--help") or std.mem.eql(u8, cmd_str, "-h") or std.mem.eql(u8, cmd_str, "help"))
         .help
     else {
@@ -68,8 +72,44 @@ pub fn main() !void {
             defer explorer.deinit();
             try explorer.run();
         },
+        .dashboard => {
+            const config = parseDashboardArgs(&args_iter);
+            var d = try dashboard.Dashboard.init(allocator, config);
+            defer d.deinit();
+            try d.run();
+        },
         .help => printUsage(),
     }
+}
+
+fn parseDashboardArgs(args_iter: anytype) dashboard.DashboardConfig {
+    var config = dashboard.DashboardConfig{};
+    while (args_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--port") or std.mem.eql(u8, arg, "-p")) {
+            if (args_iter.next()) |port_str| {
+                config.port = std.fmt.parseInt(u16, port_str, 10) catch 8080;
+            }
+        } else if (std.mem.eql(u8, arg, "--bind") or std.mem.eql(u8, arg, "-b")) {
+            if (args_iter.next()) |addr| {
+                config.bind_address = addr;
+            }
+        } else if (std.mem.eql(u8, arg, "--read-only") or std.mem.eql(u8, arg, "-r")) {
+            config.read_only = true;
+        } else if (std.mem.eql(u8, arg, "--state-file") or std.mem.eql(u8, arg, "-s")) {
+            if (args_iter.next()) |path| {
+                config.state_file = path;
+            }
+        } else if (std.mem.eql(u8, arg, "--disable-topology")) {
+            config.disable_topology = true;
+        } else if (std.mem.eql(u8, arg, "--disable-map")) {
+            config.disable_map = true;
+        } else if (std.mem.eql(u8, arg, "--update-interval")) {
+            if (args_iter.next()) |ms_str| {
+                config.update_interval_ms = std.fmt.parseInt(u32, ms_str, 10) catch 2000;
+            }
+        }
+    }
+    return config;
 }
 
 fn parseBroadcastArgs(args_iter: anytype) ?BroadcastArgs {
@@ -106,6 +146,7 @@ fn printUsage() void {
         \\USAGE:
         \\  yam broadcast <tx_hex> [options]    Broadcast a transaction
         \\  yam explore                         Interactive network explorer (default)
+        \\  yam dashboard [options]             Web dashboard
         \\  yam help                            Show this help
         \\
         \\Run 'yam broadcast --help' for broadcast options.
